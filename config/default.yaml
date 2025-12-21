@@ -1,0 +1,75 @@
+# Suika Game RL 기본 설정
+
+# 환경 설정
+env:
+  # Suika Browser 환경 설정
+  headless: true              # 브라우저 headless 모드
+  port: 8923                  # 로컬 HTTP 서버 포트
+  delay_before_img_capture: 0.5  # 이미지 캡처 전 대기 시간 (초)
+
+  # 래퍼 설정
+  observation_type: "image"  # 'image', 'features', 'both'
+  reward_scale: 1.0
+  normalize_obs: true
+  use_mock: false           # true면 Mock 환경 사용 (개발/테스트용)
+  max_episode_steps: 1000
+
+# 에이전트 설정
+agent:
+  type: "dqn"  # 'dqn', 'ppo', 'sac', 'a2c', etc.
+
+  # 학습 하이퍼파라미터
+  gamma: 0.99              # 할인율
+  learning_rate: 0.0003    # 학습률
+  batch_size: 64           # 배치 크기
+
+  # 탐험 설정
+  epsilon_start: 1.0       # 초기 epsilon (epsilon-greedy)
+  epsilon_end: 0.01        # 최종 epsilon
+  epsilon_decay: 0.995     # epsilon 감소율
+
+  # 메모리 버퍼
+  buffer_size: 100000      # 리플레이 버퍼 크기
+
+  # 신경망 아키텍처
+  network:
+    hidden_dims: [256, 256]  # 은닉층 크기
+    activation: "relu"        # 활성화 함수
+    use_dueling: false        # Dueling DQN 사용 여부
+    use_noisy: false          # Noisy Networks 사용 여부
+
+# 학습 설정
+training:
+  total_timesteps: 1000000   # 총 학습 스텝
+  train_freq: 4              # 학습 빈도 (스텝)
+  target_update_freq: 1000   # 타겟 네트워크 업데이트 빈도
+  gradient_steps: 1          # 각 업데이트당 그래디언트 스텝
+
+  # 평가
+  eval_freq: 10000          # 평가 빈도
+  eval_episodes: 10         # 평가 에피소드 수
+
+  # 체크포인트
+  save_freq: 50000          # 모델 저장 빈도
+  save_path: "experiments/checkpoints"
+
+  # 조기 종료
+  early_stopping:
+    enabled: false
+    patience: 100000        # 개선이 없을 때 기다릴 스텝 수
+    min_improvement: 10.0   # 최소 개선 점수
+
+# 로깅 설정
+logging:
+  use_tensorboard: true
+  use_wandb: false
+  wandb_project: "suika-rl"
+  log_interval: 100         # 로그 출력 빈도
+  save_video: true          # 평가 비디오 저장
+  video_freq: 50000         # 비디오 저장 빈도
+
+# 시스템 설정
+system:
+  device: "auto"            # 'cuda', 'cpu', 'auto'
+  num_workers: 4            # 병렬 환경 수
+  seed: 42                  # 랜덤 시드

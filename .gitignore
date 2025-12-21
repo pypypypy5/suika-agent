@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude/
+
+# Experiments and Logs
+experiments/
+logs/
+runs/
+*.log
+
+# TensorBoard
+tensorboard/
+
+# WandB
+wandb/
+
+# Checkpoints
+*.pth
+*.pt
+*.ckpt
+
+# Data
+data/
+*.csv
+*.npz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Suika RL - node_modules만 제외
+suika_rl/node_modules/
+
+# Test outputs
+tests/*.png
+tests/*.gif

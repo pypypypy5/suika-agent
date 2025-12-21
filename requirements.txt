@@ -1,0 +1,25 @@
+# Core RL libraries
+gymnasium>=0.29.0
+stable-baselines3>=2.2.0
+torch>=2.0.0
+numpy>=1.24.0
+
+# Visualization and logging
+tensorboard>=2.15.0
+matplotlib>=3.7.0
+wandb>=0.16.0
+
+# Configuration management
+pyyaml>=6.0
+hydra-core>=1.3.0
+
+# Utilities
+tqdm>=4.66.0
+pillow>=10.0.0
+
+# Suika RL dependencies
+selenium>=4.0.0
+imageio>=2.31.0
+ipdb>=0.13.0
+
+# Note: suika_rl is installed from the local clone (already included in project)
