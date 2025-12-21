@@ -4,11 +4,11 @@
 
 ## 🎯 주요 특징
 
-- ✅ **효율적인 상태 기반 환경**: 이미지 대신 구조화된 게임 상태 사용 (1000배 효율 개선)
+- ✅ **이미지 기반 환경**: CNN으로 게임 화면을 직접 처리
 - ✅ **실제 게임 통합**: JavaScript 수박게임 + Selenium WebDriver
 - ✅ **Best Practice 준수**: Gymnasium 표준, 모듈화, 설정 기반 관리
 - ✅ **완전한 추상화**: 에이전트는 환경 세부사항을 몰라도 됨
-- ✅ **두 가지 환경 제공**: 이미지 기반(호환성) + 상태 기반(추천)
+- ✅ **Deep RL 지원**: DQN, Rainbow 등 이미지 기반 알고리즘 적용 가능
 
 ## 프로젝트 구조
 
@@ -16,24 +16,22 @@
 melon-ai/
 ├── suika_rl/              # 외부 오픈소스 (포함됨)
 │   └── suika_env/
-│       ├── suika-game/    # JavaScript 게임 (수정됨: label 추가)
+│       ├── suika-game/    # JavaScript 게임
 │       └── suika_browser_env.py  # Selenium 래퍼
 ├── config/                # 설정 파일
 │   └── default.yaml       # 하이퍼파라미터
-├── envs/                  # 환경 래퍼 (핵심!)
-│   ├── suika_wrapper.py         # 이미지 기반 (호환성)
-│   └── suika_state_wrapper.py   # ⭐ 상태 기반 (추천)
+├── envs/                  # 환경 래퍼
+│   └── suika_wrapper.py   # 이미지 기반 환경
 ├── agents/                # 에이전트 구현 (사용자가 추가)
 │   └── base_agent.py      # 베이스 클래스
-├── models/                # 신경망 모델
+├── models/                # 신경망 모델 (CNN)
 ├── training/              # 학습 프레임워크
 │   └── trainer.py
 ├── utils/                 # 유틸리티
 │   └── logger.py
 ├── tests/                 # 테스트 코드
 │   ├── test_simple.py
-│   ├── test_environment_api.py
-│   └── test_state_env.py
+│   └── test_environment_api.py
 ├── experiments/           # 실험 결과
 ├── venv/                  # 가상환경
 ├── requirements.txt       # 의존성
@@ -99,58 +97,75 @@ python main.py --mode train --config config/default.yaml
 python main.py --mode eval --checkpoint experiments/checkpoints/best_model.pth
 ```
 
-## 두 가지 환경 비교
-
-### 1. 상태 기반 환경 (추천!) ⭐
-
-```python
-from envs import SuikaStateWrapper
-
-env = SuikaStateWrapper(headless=True, max_fruits=20)
-obs, info = env.reset()
-
-# obs = np.ndarray(62,)
-# [next_fruit, score, fruit1_x, fruit1_y, fruit1_type, ...]
-```
-
-**장점:**
-- ✅ **관찰 크기**: 62개 값 (vs 이미지 65,536개)
-- ✅ **메모리**: 0.24 KB (vs 이미지 256 KB)
-- ✅ **필요 모델**: MLP (vs CNN)
-- ✅ **학습 속도**: 100배 이상 빠름
-- ✅ **해석 가능**: 각 값의 의미가 명확
-
-### 2. 이미지 기반 환경 (호환성)
+## 환경 사용법
 
 ```python
 from envs import SuikaEnvWrapper
 
-env = SuikaEnvWrapper(headless=True)
+# 환경 생성
+env = SuikaEnvWrapper(headless=True, normalize_obs=True)
 obs, info = env.reset()
 
 # obs = {'image': (400, 300, 3), 'score': float}
+# 이미지는 자동으로 [0, 1] 범위로 정규화됨
 ```
 
-**용도**: CNN 기반 알고리즘 연구 또는 기존 코드 호환성
+**관찰:**
+- **image**: 게임 화면 (400, 300, 3) - RGB 이미지
+- **score**: 현재 점수
+
+**행동:**
+- 과일을 떨어뜨릴 위치 [0.0 ~ 1.0]
+
+**보상:**
+- 점수 증가량
+
+**종료:**
+- terminated (게임 오버)
+- truncated (시간 제한)
 
 ---
 
-## 환경 API
+## CNN 에이전트 예시
 
-에이전트는 환경의 세부사항을 몰라도 됩니다:
+이미지 기반 환경이므로 CNN을 사용한 에이전트가 필요합니다:
 
-- **관찰(Observation)**: 게임 상태 (상태 기반) 또는 이미지 + 점수
-- **행동(Action)**: 과일을 떨어뜨릴 위치 [0.0 ~ 1.0]
-- **보상(Reward)**: 점수 증가량
-- **종료(Done)**: terminated (게임 오버), truncated (시간 제한)
+```python
+import torch.nn as nn
+
+class CNNAgent(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # CNN으로 이미지 처리
+        self.conv = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=8, stride=4),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU()
+        )
+        # Fully connected
+        self.fc = nn.Sequential(
+            nn.Linear(64 * 46 * 34, 512),
+            nn.ReLU(),
+            nn.Linear(512, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = x.view(x.size(0), -1)
+        return self.fc(x)
+```
 
 ## 추가 문서
 
-- **ARCHITECTURE.md** - 프로젝트 아키텍처 상세 설명
-- **STATE_BASED_IMPROVEMENT.md** - 상태 기반 환경 개선 내용
-- **TEST_RESULTS.md** - 테스트 결과 및 API 검증
-- **FINAL_REPORT.md** - 최종 완성 보고서
-- **QUICKSTART.md** - 빠른 시작 가이드
+모든 개발 문서는 `docs/` 디렉토리에 정리되어 있습니다:
+
+- **docs/ARCHITECTURE.md** - 프로젝트 아키텍처 상세 설명
+- **docs/QUICKSTART.md** - 빠른 시작 가이드
+- **docs/TEST_RESULTS.md** - 테스트 결과 및 API 검증
 
 ## 참고 자료
 
