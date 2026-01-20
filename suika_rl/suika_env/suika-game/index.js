@@ -299,6 +299,49 @@ const Game = {
 				Game.stateIndex = GameStates.READY;
 			}
 		}, 500);
+	},
+
+	/**
+	 * Check if all dynamic bodies in the world are stable (not moving)
+	 * @param {number} threshold - Velocity threshold to consider a body as stable
+	 * @returns {boolean} - True if all bodies are stable
+	 */
+	isStable: function(threshold = 0.01) {
+		const bodies = Composite.allBodies(engine.world);
+
+		for (let body of bodies) {
+			// Skip static bodies (walls, etc.)
+			if (body.isStatic) continue;
+
+			// Calculate linear speed
+			const speed = Math.sqrt(
+				body.velocity.x * body.velocity.x +
+				body.velocity.y * body.velocity.y
+			);
+
+			// Calculate angular speed
+			const angularSpeed = Math.abs(body.angularVelocity || 0);
+
+			// If any body is moving faster than threshold, not stable
+			if (speed > threshold || angularSpeed > threshold) {
+				return false;
+			}
+		}
+
+		return true;
+	},
+
+	/**
+	 * Get stability status and game state for Python to check
+	 * @returns {object} - Stability information
+	 */
+	getStabilityStatus: function() {
+		return {
+			isStable: Game.isStable(),
+			stateIndex: Game.stateIndex,
+			score: Game.score,
+			bodyCount: Composite.allBodies(engine.world).filter(b => !b.isStatic).length
+		};
 	}
 }
 

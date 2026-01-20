@@ -79,6 +79,51 @@ class SuikaBrowserEnv(gymnasium.Env):
         arr = np.asarray(imgResized)
         return arr
 
+    def _wait_until_stable(self, max_wait_time=5.0, check_interval=0.05, stable_duration=0.2):
+        """
+        Wait until all fruits have stopped moving (velocities near zero).
+
+        This ensures that the observation returned to the agent represents a stable state
+        where all physics interactions (collisions, merges) have completed.
+
+        Args:
+            max_wait_time: Maximum time to wait in seconds (default: 5.0)
+            check_interval: How often to check stability in seconds (default: 0.05)
+            stable_duration: How long the state must remain stable in seconds (default: 0.2)
+
+        Returns:
+            bool: True if stable, False if timed out
+        """
+        start_time = time.time()
+        stable_start = None
+
+        while time.time() - start_time < max_wait_time:
+            # Check stability status from JavaScript
+            try:
+                status = self.driver.execute_script('return window.Game.getStabilityStatus();')
+
+                if status['isStable']:
+                    if stable_start is None:
+                        stable_start = time.time()
+                    elif time.time() - stable_start >= stable_duration:
+                        # Stable state maintained for required duration
+                        return True
+                else:
+                    # Reset if became unstable again
+                    stable_start = None
+
+                time.sleep(check_interval)
+
+            except Exception as e:
+                # If JavaScript function not available, fall back to fixed delay
+                print(f"Warning: Could not check stability status: {e}")
+                time.sleep(self.delay_before_img_capture)
+                return False
+
+        # Timeout reached
+        print(f"Warning: Stability timeout after {max_wait_time}s")
+        return False
+
     
     def step(self, action):
         driver = self.driver
@@ -92,13 +137,20 @@ class SuikaBrowserEnv(gymnasium.Env):
         driver.find_element(By.ID, 'fruit-position').send_keys(action)
         # click the button with id "drop-fruit-button"
         driver.find_element(By.ID, 'drop-fruit-button').click()
-        time.sleep(self.delay_before_img_capture)
+
+        # Wait until all fruits have stopped moving
+        stable = self._wait_until_stable(
+            max_wait_time=5.0,
+            check_interval=0.05,
+            stable_duration=0.2
+        )
+        info['stable'] = stable
 
         obs, status = self._get_obs_and_status()
         reward = 0
         # check if game is over.
         terminal = status == 3
-        truncated = False 
+        truncated = False
         score = obs['score'].item()
         info['score'] = score
         reward += score - self.score
