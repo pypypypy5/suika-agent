@@ -70,7 +70,12 @@ class SuikaBrowserEnv(gymnasium.Env):
         arr = np.asarray(img)
         # imageio.imwrite('cropped.png', arr)
         # import ipdb; ipdb.set_trace()
-        imgResized = img.resize((self.img_width,self.img_height), Image.ANTIALIAS) 
+        # Pillow 10.0.0+ compatibility: ANTIALIAS is deprecated
+        try:
+            resample_filter = Image.Resampling.LANCZOS
+        except AttributeError:
+            resample_filter = Image.ANTIALIAS
+        imgResized = img.resize((self.img_width,self.img_height), resample_filter)
         arr = np.asarray(imgResized)
         return arr
 
