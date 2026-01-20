@@ -46,13 +46,14 @@ class SuikaEnvWrapper(gym.Wrapper):
         reward_fn: Optional[BaseRewardFunction] = None,
         normalize_obs: bool = True,
         use_mock: bool = False,
+        fast_mode: bool = True,
         **kwargs
     ):
         """
         Args:
             headless: Selenium 브라우저 headless 모드 사용 여부
             port: 로컬 HTTP 서버 포트
-            delay_before_img_capture: 이미지 캡처 전 대기 시간 (초)
+            delay_before_img_capture: 이미지 캡처 전 대기 시간 (초) - fast_mode에서는 무시됨
             observation_type: 관찰 데이터 타입
                 - 'image': 게임 화면 이미지
                 - 'features': 추출된 특징 벡터
@@ -62,6 +63,8 @@ class SuikaEnvWrapper(gym.Wrapper):
                       None이면 ScoreBasedReward(scale=reward_scale) 사용
             normalize_obs: 관찰 정규화 여부
             use_mock: True면 실제 환경 대신 Mock 환경 사용 (개발/테스트용)
+            fast_mode: True면 고속 모드 활성화 (물리 시뮬레이션만 빠르게, 렌더링 비활성화)
+                      학습 시 권장, 시각화 필요 시 False로 설정
             **kwargs: 환경 생성에 전달할 추가 인자
         """
         # Mock 환경 또는 실제 환경 선택
@@ -75,9 +78,11 @@ class SuikaEnvWrapper(gym.Wrapper):
                 base_env = SuikaBrowserEnv(
                     headless=headless,
                     port=port,
-                    delay_before_img_capture=delay_before_img_capture
+                    delay_before_img_capture=delay_before_img_capture,
+                    fast_mode=fast_mode
                 )
-                print(f"Using real Suika environment (headless={headless}, port={port})")
+                mode_str = "fast mode (no rendering)" if fast_mode else "real-time mode"
+                print(f"Using real Suika environment (headless={headless}, port={port}, {mode_str})")
             except ImportError as e:
                 print(f"Warning: Could not import SuikaBrowserEnv: {e}")
                 print("Falling back to mock environment. Install suika_rl to use real environment.")

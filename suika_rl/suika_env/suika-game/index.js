@@ -340,7 +340,103 @@ const Game = {
 			isStable: Game.isStable(),
 			stateIndex: Game.stateIndex,
 			score: Game.score,
-			bodyCount: Composite.allBodies(engine.world).filter(b => !b.isStatic).length
+			bodyCount: Composite.allBodies(engine.world).filter(b => !b.isStatic).length,
+			fastMode: Game.fastMode
+		};
+	},
+
+	// ===== Fast Mode (for RL Training) =====
+	fastMode: false,
+
+	/**
+	 * Enable or disable fast mode
+	 * Fast mode: Manual physics stepping without real-time waiting, minimal rendering
+	 * @param {boolean} enabled - True to enable fast mode
+	 */
+	setFastMode: function(enabled) {
+		Game.fastMode = enabled;
+
+		if (enabled) {
+			// Stop real-time runner
+			Runner.stop(runner);
+			runner.enabled = false;
+
+			// Stop rendering updates but keep canvas visible for screenshots
+			// Don't use display:none as it prevents screenshots
+			Render.stop(render);
+		} else {
+			// Resume real-time mode
+			runner.enabled = true;
+			Runner.run(runner, engine);
+
+			// Resume rendering
+			Render.run(render);
+		}
+	},
+
+	/**
+	 * Manually step physics simulation (fast mode only)
+	 * @param {number} numSteps - Number of physics steps to execute
+	 * @param {number} deltaMs - Time delta per step in milliseconds (default: 16.67ms = 60 FPS)
+	 */
+	stepPhysics: function(numSteps = 1, deltaMs = 16.67) {
+		if (!Game.fastMode) {
+			console.warn('stepPhysics should only be used in fast mode');
+			return;
+		}
+
+		for (let i = 0; i < numSteps; i++) {
+			Engine.update(engine, deltaMs);
+		}
+	},
+
+	/**
+	 * Fast-forward physics simulation until all bodies are stable
+	 * @param {number} maxSteps - Maximum physics steps to simulate (default: 300)
+	 * @param {number} deltaMs - Time delta per step in ms (default: 16.67)
+	 * @param {number} threshold - Velocity threshold for stability (default: 0.01)
+	 * @returns {object} - Result with success flag, steps taken, and simulated time
+	 */
+	fastForwardUntilStable: function(maxSteps = 300, deltaMs = 16.67, threshold = 0.01) {
+		if (!Game.fastMode) {
+			console.warn('fastForwardUntilStable requires fast mode');
+			return { success: false, steps: 0, time: 0 };
+		}
+
+		let steps = 0;
+		let stableCount = 0;
+		const requiredStableSteps = 12; // ~0.2 seconds (12 * 16.67ms)
+
+		while (steps < maxSteps) {
+			// Update physics
+			Engine.update(engine, deltaMs);
+			steps++;
+
+			// Check stability
+			if (Game.isStable(threshold)) {
+				stableCount++;
+				if (stableCount >= requiredStableSteps) {
+					// Render once at the end for screenshot
+					Render.world(render);
+
+					return {
+						success: true,
+						steps: steps,
+						time: steps * deltaMs
+					};
+				}
+			} else {
+				stableCount = 0;
+			}
+		}
+
+		// Timeout - still render final state
+		Render.world(render);
+
+		return {
+			success: false,
+			steps: steps,
+			time: steps * deltaMs
 		};
 	}
 }
@@ -449,4 +545,12 @@ const resizeCanvas = () => {
 
 document.body.onload = resizeCanvas;
 document.body.onresize = resizeCanvas;
-window.Game = Game
+
+// Expose to window for Python access
+window.Game = Game;
+window.engine = engine;
+window.runner = runner;
+window.render = render;
+window.Render = Render;
+window.Runner = Runner;
+window.Engine = Engine;

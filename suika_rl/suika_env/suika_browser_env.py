@@ -12,7 +12,7 @@ import socket
 import os
 
 class SuikaBrowserEnv(gymnasium.Env):
-    def __init__(self, headless=True, port=8923, delay_before_img_capture=0.5) -> None:
+    def __init__(self, headless=True, port=8923, delay_before_img_capture=0.5, fast_mode=True) -> None:
         self.game_url = f"http://localhost:{port}/"
         # Check if port is already in use
         self.server = None
@@ -30,6 +30,7 @@ class SuikaBrowserEnv(gymnasium.Env):
         if headless:
             opts.add_argument("--headless=new")
         self.delay_before_img_capture = delay_before_img_capture
+        self.fast_mode = fast_mode
         self.img_width = 128
         self.img_height = 128
         self.driver = webdriver.Chrome(options=opts)
@@ -42,6 +43,13 @@ class SuikaBrowserEnv(gymnasium.Env):
 
     def reset(self,seed=None, options=None):
         self._reload()
+
+        # Enable fast mode if configured
+        if self.fast_mode:
+            self.driver.execute_script('window.Game.setFastMode(true);')
+            # Render once for initial screenshot
+            self.driver.execute_script('window.Render.world(window.render);')
+
         info = {}
         self.score = 0
         obs, status = self._get_obs_and_status()
@@ -79,12 +87,36 @@ class SuikaBrowserEnv(gymnasium.Env):
         arr = np.asarray(imgResized)
         return arr
 
+    def _wait_until_stable_fast(self, max_steps=300, delta_ms=16.67, threshold=0.01):
+        """
+        Wait until stable using fast-forward physics simulation (fast mode only).
+        No real-time waiting - physics steps are executed as fast as possible.
+
+        Args:
+            max_steps: Maximum physics steps to simulate (default: 300 = ~5 seconds simulated time)
+            delta_ms: Time delta per physics step in ms (default: 16.67 = 60 FPS)
+            threshold: Velocity threshold for stability (default: 0.01)
+
+        Returns:
+            dict: Result with 'success', 'steps', and 'time' keys
+        """
+        try:
+            result = self.driver.execute_script(f'''
+                return window.Game.fastForwardUntilStable({max_steps}, {delta_ms}, {threshold});
+            ''')
+            return result
+        except Exception as e:
+            print(f"Warning: Fast mode failed: {e}")
+            return {'success': False, 'steps': 0, 'time': 0}
+
     def _wait_until_stable(self, max_wait_time=5.0, check_interval=0.05, stable_duration=0.2):
         """
         Wait until all fruits have stopped moving (velocities near zero).
 
         This ensures that the observation returned to the agent represents a stable state
         where all physics interactions (collisions, merges) have completed.
+
+        Automatically uses fast mode if enabled, otherwise uses real-time mode.
 
         Args:
             max_wait_time: Maximum time to wait in seconds (default: 5.0)
@@ -94,6 +126,13 @@ class SuikaBrowserEnv(gymnasium.Env):
         Returns:
             bool: True if stable, False if timed out
         """
+        # Fast mode: no real-time waiting
+        if self.fast_mode:
+            max_steps = int(max_wait_time * 1000 / 16.67)  # Convert seconds to physics steps
+            result = self._wait_until_stable_fast(max_steps=max_steps, delta_ms=16.67, threshold=0.01)
+            return result['success']
+
+        # Real-time mode: poll and wait
         start_time = time.time()
         stable_start = None
 
