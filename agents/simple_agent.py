@@ -116,16 +116,51 @@ class SimpleAgent(RLAgent):
         """
         super().__init__(observation_space, action_space, config, device)
 
-        # 행동 공간 확인
+        # 행동 공간 확인 및 설정
         if hasattr(action_space, 'n'):
             # Discrete action space
             self.action_dim = action_space.n
-            self.is_discrete = True
-        else:
-            raise NotImplementedError("SimpleAgent는 현재 discrete action space만 지원합니다.")
+            self.is_discrete_env = True
+            self.continuous_action_space = None
+        elif hasattr(action_space, 'shape'):
+            # Box (continuous) action space
+            # 내부적으로 이산화하여 처리
+            self.num_discrete_actions = config.get('num_discrete_actions', 11)
+            self.action_dim = self.num_discrete_actions
+            self.is_discrete_env = False
+            self.continuous_action_space = action_space
 
-        # 관찰 공간 shape
-        raw_obs_shape = observation_space.shape
+            # 이산 행동 -> 연속 행동 매핑 테이블
+            import numpy as np
+            low = action_space.low[0]
+            high = action_space.high[0]
+            self.discrete_to_continuous = np.linspace(low, high, self.num_discrete_actions)
+        else:
+            raise NotImplementedError(
+                f"SimpleAgent는 Discrete 또는 Box action space만 지원합니다. "
+                f"받은 타입: {type(action_space)}"
+            )
+
+        # 관찰 공간 shape 확인 및 설정
+        from gymnasium import spaces as gym_spaces
+
+        if isinstance(observation_space, gym_spaces.Dict):
+            # Dict observation space - 'image' 키 사용
+            self.is_dict_obs = True
+            self.obs_key = config.get('obs_key', 'image')
+
+            if self.obs_key not in observation_space.spaces:
+                raise ValueError(
+                    f"observation_space에 '{self.obs_key}' 키가 없습니다. "
+                    f"사용 가능한 키: {list(observation_space.spaces.keys())}"
+                )
+
+            raw_obs_shape = observation_space.spaces[self.obs_key].shape
+        else:
+            # 단일 observation space
+            self.is_dict_obs = False
+            self.obs_key = None
+            raw_obs_shape = observation_space.shape
 
         # 이미지 입력이면 (H, W, C) -> (C, H, W)로 변환
         if len(raw_obs_shape) == 3:
@@ -191,37 +226,70 @@ class SimpleAgent(RLAgent):
 
         return action
 
-    def select_action(self, observation: np.ndarray, deterministic: bool = False) -> np.ndarray:
+    def _extract_observation(self, observation):
+        """
+        Dict observation에서 실제 관찰 추출
+
+        Args:
+            observation: 환경의 관찰 (Dict 또는 array)
+
+        Returns:
+            추출된 관찰 (array)
+        """
+        if self.is_dict_obs:
+            # Dict에서 지정된 키 추출
+            if isinstance(observation, dict):
+                return observation[self.obs_key]
+            else:
+                # 이미 추출된 경우
+                return observation
+        else:
+            return observation
+
+    def select_action(self, observation, deterministic: bool = False):
         """
         행동 선택
 
         Args:
-            observation: 환경 관찰
+            observation: 환경 관찰 (Dict 또는 array)
             deterministic: 결정적 선택 여부
 
         Returns:
-            선택된 행동
+            선택된 행동 (환경에 맞는 형태로 변환됨)
         """
+        # Dict observation 처리
+        obs = self._extract_observation(observation)
+
         with torch.no_grad():
-            obs_tensor = self.preprocess_observation(observation)
+            obs_tensor = self.preprocess_observation(obs)
 
             # 학습 모드에서는 gradient를 기록해야 함
             if self.policy_net.training and not deterministic:
-                obs_tensor = self.preprocess_observation(observation)
+                obs_tensor = self.preprocess_observation(obs)
                 # gradient 필요
                 obs_tensor.requires_grad = False
                 with torch.enable_grad():
-                    action = self._forward_policy(obs_tensor, deterministic)
+                    discrete_action = self._forward_policy(obs_tensor, deterministic)
             else:
-                action = self._forward_policy(obs_tensor, deterministic)
+                discrete_action = self._forward_policy(obs_tensor, deterministic)
 
-        action_np = action.cpu().numpy()
+        # 이산 행동을 numpy로 변환
+        discrete_action_np = discrete_action.cpu().numpy()
 
-        # scalar를 array로 변환
-        if action_np.shape == ():
-            action_np = np.array([action_np])
+        # scalar를 정수로 변환
+        if discrete_action_np.shape == ():
+            discrete_action_idx = int(discrete_action_np)
+        else:
+            discrete_action_idx = int(discrete_action_np[0])
 
-        return action_np[0] if len(action_np) == 1 else action_np
+        # 환경의 action space에 맞게 변환
+        if self.is_discrete_env:
+            # Discrete action space: 그대로 반환
+            return discrete_action_idx
+        else:
+            # Box action space: 연속 값으로 변환
+            continuous_value = self.discrete_to_continuous[discrete_action_idx]
+            return np.array([continuous_value], dtype=np.float32)
 
     def store_transition(self, reward: float):
         """

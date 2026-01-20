@@ -18,6 +18,10 @@ env:
 agent:
   type: "simple"  # 'simple', 'random', 'dqn', 'ppo', 'sac', 'a2c', etc.
 
+  # SimpleAgent 전용 설정
+  num_discrete_actions: 11  # Box action space를 이산화할 때 행동 개수
+  obs_key: "image"          # Dict observation에서 사용할 키
+
   # 학습 하이퍼파라미터
   gamma: 0.99              # 할인율
   learning_rate: 0.0003    # 학습률
