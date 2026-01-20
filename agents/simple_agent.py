@@ -165,10 +165,18 @@ class SimpleAgent(RLAgent):
         # 이미지 입력이면 (H, W, C) -> (C, H, W)로 변환
         if len(raw_obs_shape) == 3:
             # 이미지로 가정: (H, W, C) -> (C, H, W)
-            self.obs_shape = (raw_obs_shape[2], raw_obs_shape[0], raw_obs_shape[1])
+            # RGBA(4채널)는 RGB(3채널)로 변환할 것이므로 채널 수 조정
+            num_channels = raw_obs_shape[2]
+            print(f"[DEBUG] raw_obs_shape: {raw_obs_shape}, num_channels: {num_channels}")
+            if num_channels == 4:
+                num_channels = 3  # RGBA -> RGB
+                print(f"[DEBUG] RGBA detected, converting to RGB: num_channels = {num_channels}")
+            self.obs_shape = (num_channels, raw_obs_shape[0], raw_obs_shape[1])
         else:
             # 벡터 입력
             self.obs_shape = raw_obs_shape
+
+        print(f"[DEBUG] Final obs_shape for network: {self.obs_shape}")
 
         # 네트워크 설정
         hidden_dim = config.get('network', {}).get('hidden_dims', [128])[0]
@@ -179,6 +187,13 @@ class SimpleAgent(RLAgent):
             action_dim=self.action_dim,
             hidden_dim=hidden_dim
         ).to(self.device)
+
+        # 네트워크 확인
+        if hasattr(self.policy_net.encoder, '__getitem__'):
+            first_layer = self.policy_net.encoder[0]
+            if hasattr(first_layer, 'in_channels'):
+                print(f"[DEBUG] Network first Conv2d in_channels: {first_layer.in_channels}")
+                print(f"[DEBUG] Network first Conv2d weight shape: {first_layer.weight.shape}")
 
         # 옵티마이저
         self.optimizer = torch.optim.Adam(
@@ -239,12 +254,27 @@ class SimpleAgent(RLAgent):
         if self.is_dict_obs:
             # Dict에서 지정된 키 추출
             if isinstance(observation, dict):
-                return observation[self.obs_key]
+                obs = observation[self.obs_key]
             else:
                 # 이미 추출된 경우
-                return observation
+                obs = observation
         else:
-            return observation
+            obs = observation
+
+        # 디버그: 원본 shape 출력 (첫 번째 호출 시에만)
+        if not hasattr(self, '_first_obs_logged'):
+            print(f"[DEBUG] _extract_observation - original obs shape: {obs.shape}")
+            self._first_obs_logged = True
+
+        # RGBA -> RGB 변환 (4채널 -> 3채널)
+        if isinstance(obs, np.ndarray) and len(obs.shape) == 3 and obs.shape[2] == 4:
+            # Alpha 채널 제거
+            obs = obs[:, :, :3]
+            if not hasattr(self, '_rgba_conversion_logged'):
+                print(f"[DEBUG] _extract_observation - converted RGBA to RGB, new shape: {obs.shape}")
+                self._rgba_conversion_logged = True
+
+        return obs
 
     def select_action(self, observation, deterministic: bool = False):
         """
