@@ -16,6 +16,9 @@ suika_rl_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'suika_
 if os.path.exists(suika_rl_path) and suika_rl_path not in sys.path:
     sys.path.insert(0, suika_rl_path)
 
+# Reward 함수 import
+from envs.rewards import BaseRewardFunction, ScoreBasedReward
+
 
 class SuikaEnvWrapper(gym.Wrapper):
     """
@@ -30,7 +33,7 @@ class SuikaEnvWrapper(gym.Wrapper):
     Attributes:
         env: 원본 Suika 환경
         observation_type: 관찰 타입 ('image', 'features', 'both')
-        reward_scale: 보상 스케일링 팩터
+        reward_fn: 보상 계산 함수 (BaseRewardFunction 인스턴스)
     """
 
     def __init__(
@@ -40,6 +43,7 @@ class SuikaEnvWrapper(gym.Wrapper):
         delay_before_img_capture: float = 0.5,
         observation_type: str = "image",
         reward_scale: float = 1.0,
+        reward_fn: Optional[BaseRewardFunction] = None,
         normalize_obs: bool = True,
         use_mock: bool = False,
         **kwargs
@@ -53,7 +57,9 @@ class SuikaEnvWrapper(gym.Wrapper):
                 - 'image': 게임 화면 이미지
                 - 'features': 추출된 특징 벡터
                 - 'both': 이미지와 특징 모두
-            reward_scale: 보상 값 스케일링 팩터
+            reward_scale: 보상 값 스케일링 팩터 (하위 호환성 유지, reward_fn이 None일 때만 사용)
+            reward_fn: 커스텀 보상 함수 (BaseRewardFunction 인스턴스)
+                      None이면 ScoreBasedReward(scale=reward_scale) 사용
             normalize_obs: 관찰 정규화 여부
             use_mock: True면 실제 환경 대신 Mock 환경 사용 (개발/테스트용)
             **kwargs: 환경 생성에 전달할 추가 인자
@@ -84,8 +90,14 @@ class SuikaEnvWrapper(gym.Wrapper):
         super().__init__(base_env)
 
         self.observation_type = observation_type
-        self.reward_scale = reward_scale
         self.normalize_obs = normalize_obs
+
+        # Reward 함수 설정
+        if reward_fn is None:
+            # reward_fn이 주어지지 않으면 기본 ScoreBasedReward 사용 (하위 호환성)
+            self.reward_fn = ScoreBasedReward(scale=reward_scale)
+        else:
+            self.reward_fn = reward_fn
 
         # 에피소드 통계
         self.episode_score = 0
@@ -113,6 +125,9 @@ class SuikaEnvWrapper(gym.Wrapper):
         # 에피소드 통계 초기화
         self.episode_score = 0
         self.episode_steps = 0
+
+        # Reward 함수 상태 초기화
+        self.reward_fn.reset()
 
         # 관찰 전처리
         processed_obs = self._process_observation(obs)
@@ -147,11 +162,12 @@ class SuikaEnvWrapper(gym.Wrapper):
         self.episode_steps += 1
         self.episode_score += reward
 
+        # 관찰 전처리 (reward 함수에서 사용하기 위해 먼저 처리)
+        processed_obs = self._process_observation(obs)
+        self._current_obs = processed_obs  # reward 함수에서 사용 가능하도록 저장
+
         # 보상 처리
         processed_reward = self._process_reward(reward, info)
-
-        # 관찰 전처리
-        processed_obs = self._process_observation(obs)
 
         # 추가 정보 업데이트
         info.update({
@@ -222,11 +238,11 @@ class SuikaEnvWrapper(gym.Wrapper):
         Returns:
             처리된 보상
         """
-        # 기본: 스케일링
-        processed_reward = reward * self.reward_scale
+        # 현재 관찰 정보 가져오기 (reward 함수에서 사용할 수 있도록)
+        obs = getattr(self, '_current_obs', {})
 
-        # 여기에 커스텀 보상 로직 추가 가능
-        # 예: 콤보 보너스, 생존 보너스 등
+        # reward_fn을 사용하여 보상 계산
+        processed_reward = self.reward_fn.calculate(obs, reward, info)
 
         return processed_reward
 
