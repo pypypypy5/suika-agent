@@ -158,7 +158,7 @@ const Game = {
 	},
 
 	startGame: function () {
-		Game.sounds.click.play();
+		// Game.sounds.click.play();  // Disabled for training
 
 		Composite.remove(engine.world, menuStatics);
 		Composite.add(engine.world, gameStatics);
@@ -217,7 +217,7 @@ const Game = {
 				const midPosX = (bodyA.position.x + bodyB.position.x) / 2;
 				const midPosY = (bodyA.position.y + bodyB.position.y) / 2;
 
-				Game.sounds[`pop${bodyA.sizeIndex}`].play();
+				// Game.sounds[`pop${bodyA.sizeIndex}`].play();  // Disabled for training
 				Composite.remove(engine.world, [bodyA, bodyB]);
 				Composite.add(engine.world, Game.generateFruitBody(midPosX, midPosY, newSize));
 				Game.addPop(midPosX, midPosY, bodyA.circleRadius);
@@ -277,7 +277,7 @@ const Game = {
 	addFruit: function (x) {
 		if (Game.stateIndex !== GameStates.READY) return;
 
-		Game.sounds.click.play();
+		// Game.sounds.click.play();  // Disabled for training
 
 		Game.stateIndex = GameStates.DROP;
 		const latestFruit = Game.generateFruitBody(x, 0, Game.currentFruitSize);
