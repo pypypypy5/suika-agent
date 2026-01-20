@@ -1,0 +1,333 @@
+"""
+Simple Policy Gradient Agent
+
+가장 간단한 형태의 강화학습 에이전트입니다.
+- Replay buffer 없음
+- Target network 없음
+- 단순 policy gradient로 학습
+- 각 에피소드의 경험을 즉시 사용해 업데이트
+"""
+
+from typing import Dict, List, Tuple, Optional
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.distributions import Categorical
+
+from .base_agent import RLAgent
+
+
+class SimplePolicyNetwork(nn.Module):
+    """
+    간단한 정책 네트워크
+
+    관찰을 입력받아 행동 확률을 출력합니다.
+    """
+
+    def __init__(self, obs_shape: Tuple, action_dim: int, hidden_dim: int = 128):
+        """
+        Args:
+            obs_shape: 관찰 공간 shape
+            action_dim: 행동 공간 차원
+            hidden_dim: 은닉층 크기
+        """
+        super().__init__()
+
+        # 입력 크기 계산
+        if len(obs_shape) == 3:  # 이미지 입력 (C, H, W)
+            # 간단한 CNN
+            self.encoder = nn.Sequential(
+                nn.Conv2d(obs_shape[0], 32, kernel_size=8, stride=4),
+                nn.ReLU(),
+                nn.Conv2d(32, 64, kernel_size=4, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(64, 64, kernel_size=3, stride=1),
+                nn.ReLU(),
+                nn.Flatten()
+            )
+
+            # CNN 출력 크기 계산 (간단한 추정)
+            with torch.no_grad():
+                sample_input = torch.zeros(1, *obs_shape)
+                cnn_output_size = self.encoder(sample_input).shape[1]
+
+            self.fc = nn.Sequential(
+                nn.Linear(cnn_output_size, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, action_dim)
+            )
+            self.is_image = True
+        else:
+            # 벡터 입력
+            input_dim = np.prod(obs_shape)
+            self.encoder = nn.Identity()  # 벡터는 flatten 필요 없음
+            self.fc = nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, action_dim)
+            )
+            self.is_image = False
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass
+
+        Args:
+            x: 입력 관찰
+
+        Returns:
+            행동 로짓
+        """
+        # 벡터 입력은 (batch, features) 형태여야 함
+        if not self.is_image and x.dim() == 1:
+            x = x.unsqueeze(0)  # (features,) -> (1, features)
+
+        features = self.encoder(x)
+        logits = self.fc(features)
+        return logits
+
+
+class SimpleAgent(RLAgent):
+    """
+    Simple Policy Gradient Agent
+
+    REINFORCE 알고리즘의 간단한 구현입니다.
+    - 에피소드 단위로 학습
+    - Monte Carlo return 사용
+    - 즉시 업데이트 (no replay buffer)
+    """
+
+    def __init__(
+        self,
+        observation_space,
+        action_space,
+        config: Optional[Dict] = None,
+        device: Optional[str] = None
+    ):
+        """
+        Args:
+            observation_space: Gymnasium observation space
+            action_space: Gymnasium action space
+            config: 설정 딕셔너리
+            device: PyTorch 디바이스
+        """
+        super().__init__(observation_space, action_space, config, device)
+
+        # 행동 공간 확인
+        if hasattr(action_space, 'n'):
+            # Discrete action space
+            self.action_dim = action_space.n
+            self.is_discrete = True
+        else:
+            raise NotImplementedError("SimpleAgent는 현재 discrete action space만 지원합니다.")
+
+        # 관찰 공간 shape
+        raw_obs_shape = observation_space.shape
+
+        # 이미지 입력이면 (H, W, C) -> (C, H, W)로 변환
+        if len(raw_obs_shape) == 3:
+            # 이미지로 가정: (H, W, C) -> (C, H, W)
+            self.obs_shape = (raw_obs_shape[2], raw_obs_shape[0], raw_obs_shape[1])
+        else:
+            # 벡터 입력
+            self.obs_shape = raw_obs_shape
+
+        # 네트워크 설정
+        hidden_dim = config.get('network', {}).get('hidden_dims', [128])[0]
+
+        # 정책 네트워크 생성
+        self.policy_net = SimplePolicyNetwork(
+            obs_shape=self.obs_shape,
+            action_dim=self.action_dim,
+            hidden_dim=hidden_dim
+        ).to(self.device)
+
+        # 옵티마이저
+        self.optimizer = torch.optim.Adam(
+            self.policy_net.parameters(),
+            lr=self.learning_rate
+        )
+
+        # 에피소드 버퍼 (한 에피소드 동안의 경험 저장)
+        self.reset_episode_buffer()
+
+        # 통계
+        self.episode_rewards = []
+
+    def reset_episode_buffer(self):
+        """에피소드 버퍼 초기화"""
+        self.episode_log_probs: List[torch.Tensor] = []
+        self.episode_rewards_buffer: List[float] = []
+
+    def _forward_policy(self, obs: torch.Tensor, deterministic: bool) -> torch.Tensor:
+        """
+        정책 네트워크를 통해 행동 선택
+
+        Args:
+            obs: 전처리된 관찰
+            deterministic: True면 가장 높은 확률의 행동 선택
+
+        Returns:
+            선택된 행동
+        """
+        logits = self.policy_net(obs)
+
+        if deterministic:
+            # 결정적: argmax
+            action = torch.argmax(logits, dim=-1)
+        else:
+            # 확률적: 샘플링
+            probs = F.softmax(logits, dim=-1)
+            dist = Categorical(probs)
+            action = dist.sample()
+
+            # 학습 모드일 때 log_prob 저장
+            if self.policy_net.training:
+                log_prob = dist.log_prob(action)
+                self.episode_log_probs.append(log_prob)
+
+        return action
+
+    def select_action(self, observation: np.ndarray, deterministic: bool = False) -> np.ndarray:
+        """
+        행동 선택
+
+        Args:
+            observation: 환경 관찰
+            deterministic: 결정적 선택 여부
+
+        Returns:
+            선택된 행동
+        """
+        with torch.no_grad():
+            obs_tensor = self.preprocess_observation(observation)
+
+            # 학습 모드에서는 gradient를 기록해야 함
+            if self.policy_net.training and not deterministic:
+                obs_tensor = self.preprocess_observation(observation)
+                # gradient 필요
+                obs_tensor.requires_grad = False
+                with torch.enable_grad():
+                    action = self._forward_policy(obs_tensor, deterministic)
+            else:
+                action = self._forward_policy(obs_tensor, deterministic)
+
+        action_np = action.cpu().numpy()
+
+        # scalar를 array로 변환
+        if action_np.shape == ():
+            action_np = np.array([action_np])
+
+        return action_np[0] if len(action_np) == 1 else action_np
+
+    def store_transition(self, reward: float):
+        """
+        전이 저장 (보상만 저장, log_prob은 이미 저장됨)
+
+        Args:
+            reward: 받은 보상
+        """
+        self.episode_rewards_buffer.append(reward)
+        # Note: total_steps는 Trainer에서 관리하므로 여기서 증가시키지 않음
+
+    def update(
+        self,
+        obs: Optional[np.ndarray] = None,
+        action: Optional[np.ndarray] = None,
+        reward: Optional[float] = None,
+        next_obs: Optional[np.ndarray] = None,
+        done: bool = False
+    ) -> Dict[str, float]:
+        """
+        에이전트 업데이트
+
+        Trainer 호환성을 위해 매 스텝마다 호출되지만,
+        실제 학습은 에피소드가 끝날 때만 수행합니다.
+
+        Args:
+            obs: 현재 관찰 (사용 안 함)
+            action: 선택한 행동 (사용 안 함)
+            reward: 받은 보상
+            next_obs: 다음 관찰 (사용 안 함)
+            done: 에피소드 종료 여부
+
+        Returns:
+            학습 메트릭 (에피소드 종료 시에만 반환)
+        """
+        # 보상 저장
+        if reward is not None:
+            self.store_transition(reward)
+
+        # 에피소드가 끝나지 않았으면 빈 딕셔너리 반환
+        if not done:
+            return {}
+
+        # 에피소드 종료 시 정책 업데이트
+        if len(self.episode_log_probs) == 0:
+            self.reset_episode_buffer()
+            return {}
+
+        # Monte Carlo returns 계산 (discounted cumulative rewards)
+        returns = []
+        G = 0
+        for r in reversed(self.episode_rewards_buffer):
+            G = r + self.gamma * G
+            returns.insert(0, G)
+
+        # 정규화 (학습 안정화)
+        returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
+        if len(returns) > 1:
+            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+
+        # Policy gradient loss 계산
+        policy_loss = []
+        for log_prob, G in zip(self.episode_log_probs, returns):
+            policy_loss.append(-log_prob * G)
+
+        # 손실 합산 및 역전파
+        loss = torch.stack(policy_loss).sum()
+
+        self.optimizer.zero_grad()
+        loss.backward()
+
+        # Gradient clipping (학습 안정화)
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
+
+        self.optimizer.step()
+
+        # 통계 저장
+        episode_reward = sum(self.episode_rewards_buffer)
+        self.episode_rewards.append(episode_reward)
+        # Note: episodes는 Trainer에서 관리하므로 여기서 증가시키지 않음
+
+        # 메트릭
+        metrics = {
+            'loss': loss.item(),
+            'episode_reward': episode_reward,
+            'episode_length': len(self.episode_rewards_buffer)
+        }
+
+        # 버퍼 초기화
+        self.reset_episode_buffer()
+
+        return metrics
+
+    def get_statistics(self) -> Dict:
+        """
+        에이전트 통계 반환
+
+        Returns:
+            통계 딕셔너리
+        """
+        stats = super().get_statistics()
+
+        if len(self.episode_rewards) > 0:
+            stats.update({
+                'mean_episode_reward': np.mean(self.episode_rewards[-100:]),
+                'total_episodes': len(self.episode_rewards)
+            })
+
+        return stats

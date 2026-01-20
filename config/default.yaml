@@ -16,7 +16,7 @@ env:
 
 # 에이전트 설정
 agent:
-  type: "dqn"  # 'dqn', 'ppo', 'sac', 'a2c', etc.
+  type: "simple"  # 'simple', 'random', 'dqn', 'ppo', 'sac', 'a2c', etc.
 
   # 학습 하이퍼파라미터
   gamma: 0.99              # 할인율

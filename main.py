@@ -9,7 +9,7 @@ import yaml
 from pathlib import Path
 
 from envs import SuikaEnvWrapper
-from agents import RandomAgent
+from agents import RandomAgent, SimpleAgent
 from utils import setup_logger
 from training import Trainer
 
@@ -79,6 +79,14 @@ def create_agent(env: SuikaEnvWrapper, config: dict):
             config=agent_config
         )
         print("Using Random Agent (baseline)")
+    elif agent_type == 'simple':
+        # 간단한 Policy Gradient 에이전트
+        agent = SimpleAgent(
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            config=agent_config
+        )
+        print("Using Simple Policy Gradient Agent")
     else:
         # 여기에 다른 에이전트 타입 추가
         # 예: DQN, PPO, SAC 등

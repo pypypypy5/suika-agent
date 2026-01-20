@@ -50,12 +50,35 @@ class BaseAgent(ABC):
         pass
 
     @abstractmethod
-    def update(self, *args, **kwargs) -> Dict[str, float]:
+    def update(
+        self,
+        obs: Optional[np.ndarray] = None,
+        action: Optional[np.ndarray] = None,
+        reward: Optional[float] = None,
+        next_obs: Optional[np.ndarray] = None,
+        done: bool = False
+    ) -> Dict[str, float]:
         """
         에이전트 학습 업데이트
 
+        Trainer는 매 스텝마다 이 메서드를 호출합니다.
+        에이전트는 매 스텝 또는 에피소드 단위로 학습할 수 있습니다.
+
+        Args:
+            obs: 현재 관찰
+            action: 선택한 행동
+            reward: 받은 보상
+            next_obs: 다음 관찰
+            done: 에피소드 종료 여부
+
         Returns:
-            학습 메트릭 딕셔너리 (loss, etc.)
+            학습 메트릭 딕셔너리 (loss 등)
+            학습이 일어나지 않았으면 빈 딕셔너리 {} 반환
+
+        Note:
+            - DQN 같은 에이전트: 매 스텝 학습 (done과 무관하게 메트릭 반환 가능)
+            - Policy Gradient 에이전트: 에피소드 종료 시에만 학습 (done=True일 때만 메트릭 반환)
+            - Random 에이전트: 학습하지 않음 (항상 {} 반환)
         """
         pass
 
@@ -262,7 +285,14 @@ class RandomAgent(BaseAgent):
         """랜덤 행동 선택"""
         return self.action_space.sample()
 
-    def update(self, *args, **kwargs) -> Dict[str, float]:
+    def update(
+        self,
+        obs: Optional[np.ndarray] = None,
+        action: Optional[np.ndarray] = None,
+        reward: Optional[float] = None,
+        next_obs: Optional[np.ndarray] = None,
+        done: bool = False
+    ) -> Dict[str, float]:
         """랜덤 에이전트는 학습하지 않음"""
         return {}
 
