@@ -1,0 +1,80 @@
+# Suika Game RL 디버깅 설정
+# 빠른 테스트 및 디버깅용 설정 (매우 낮은 timesteps)
+
+# 환경 설정
+env:
+  # Suika Browser 환경 설정
+  headless: true              # 브라우저 headless 모드
+  port: 8923                  # 로컬 HTTP 서버 포트
+  delay_before_img_capture: 0.5  # 이미지 캡처 전 대기 시간 (초)
+
+  # 래퍼 설정
+  observation_type: "image"  # 'image', 'features', 'both'
+  reward_scale: 1.0
+  normalize_obs: true
+  use_mock: false           # true면 Mock 환경 사용 (개발/테스트용)
+  max_episode_steps: 100    # 디버깅용으로 짧게 (기본 1000 -> 100)
+
+# 에이전트 설정
+agent:
+  type: "simple"  # 'simple', 'random', 'dqn', 'ppo', 'sac', 'a2c', etc.
+
+  # SimpleAgent 전용 설정
+  num_discrete_actions: 11  # Box action space를 이산화할 때 행동 개수
+  obs_key: "image"          # Dict observation에서 사용할 키
+
+  # 학습 하이퍼파라미터
+  gamma: 0.99              # 할인율
+  learning_rate: 0.0003    # 학습률
+  batch_size: 16           # 배치 크기 (기본 64 -> 16)
+
+  # 탐험 설정
+  epsilon_start: 1.0       # 초기 epsilon (epsilon-greedy)
+  epsilon_end: 0.01        # 최종 epsilon
+  epsilon_decay: 0.995     # epsilon 감소율
+
+  # 메모리 버퍼
+  buffer_size: 5000        # 리플레이 버퍼 크기 (기본 100000 -> 5000)
+
+  # 신경망 아키텍처
+  network:
+    hidden_dims: [256, 256]  # 은닉층 크기
+    activation: "relu"        # 활성화 함수
+    use_dueling: false        # Dueling DQN 사용 여부
+    use_noisy: false          # Noisy Networks 사용 여부
+
+# 학습 설정
+training:
+  total_timesteps: 1000      # 총 학습 스텝 (기본 1000000 -> 1000)
+  train_freq: 4              # 학습 빈도 (스텝)
+  target_update_freq: 100    # 타겟 네트워크 업데이트 빈도 (기본 1000 -> 100)
+  gradient_steps: 1          # 각 업데이트당 그래디언트 스텝
+
+  # 평가
+  eval_freq: 200            # 평가 빈도 (기본 10000 -> 200)
+  eval_episodes: 2          # 평가 에피소드 수 (기본 10 -> 2)
+
+  # 체크포인트
+  save_freq: 500            # 모델 저장 빈도 (기본 50000 -> 500)
+  save_path: "experiments/debug_checkpoints"
+
+  # 조기 종료
+  early_stopping:
+    enabled: false
+    patience: 500           # 개선이 없을 때 기다릴 스텝 수 (기본 100000 -> 500)
+    min_improvement: 10.0   # 최소 개선 점수
+
+# 로깅 설정
+logging:
+  use_tensorboard: true
+  use_wandb: false
+  wandb_project: "suika-rl-debug"
+  log_interval: 10          # 로그 출력 빈도 (기본 100 -> 10)
+  save_video: false         # 평가 비디오 저장 (디버깅 시 off)
+  video_freq: 500           # 비디오 저장 빈도 (기본 50000 -> 500)
+
+# 시스템 설정
+system:
+  device: "auto"            # 'cuda', 'cpu', 'auto'
+  num_workers: 1            # 병렬 환경 수 (기본 4 -> 1, 디버깅 시 단일)
+  seed: 42                  # 랜덤 시드
