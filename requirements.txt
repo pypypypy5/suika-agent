@@ -19,7 +19,7 @@ pillow>=10.0.0
 
 # Suika RL dependencies
 selenium>=4.0.0
-imageio>=2.31.0
+imageio[ffmpeg]>=2.31.0
 ipdb>=0.13.0
 
 # Note: suika_rl is installed from the local clone (already included in project)

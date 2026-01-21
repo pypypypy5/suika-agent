@@ -7,6 +7,8 @@ Suika Game RL 메인 실행 파일
 import argparse
 import yaml
 from pathlib import Path
+import numpy as np
+import imageio
 
 from envs import SuikaEnvWrapper
 from agents import RandomAgent, SimpleAgent
@@ -144,8 +146,13 @@ def evaluate(config: dict, checkpoint_path: str) -> None:
     print("SUIKA GAME REINFORCEMENT LEARNING - EVALUATION")
     print("=" * 60)
 
-    # 환경 생성
+    # 환경 생성 (기존 env 코드는 건드리지 않음)
     env = create_env(config)
+
+    # 비디오 저장 폴더 생성
+    video_folder = Path("experiments/videos")
+    video_folder.mkdir(parents=True, exist_ok=True)
+    print(f"Videos will be saved to: {video_folder}")
 
     # 에이전트 생성
     agent = create_agent(env, config)
@@ -167,7 +174,21 @@ def evaluate(config: dict, checkpoint_path: str) -> None:
         episode_length = 0
         done = False
 
+        # 프레임 저장을 위한 리스트 (수동 비디오 저장)
+        frames = []
+
         while not done:
+            # 현재 프레임 저장 (observation에서 'image' 추출)
+            if isinstance(obs, dict) and 'image' in obs:
+                frame = obs['image']
+                # 정규화된 이미지를 uint8로 변환
+                if frame.dtype == np.float32 or frame.dtype == np.float64:
+                    frame = (frame * 255).astype(np.uint8)
+                # RGBA를 RGB로 변환 (alpha 채널 제거)
+                if frame.shape[-1] == 4:
+                    frame = frame[:, :, :3]
+                frames.append(frame)
+
             action = agent.select_action(obs, deterministic=True)
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
@@ -175,17 +196,35 @@ def evaluate(config: dict, checkpoint_path: str) -> None:
             episode_reward += reward
             episode_length += 1
 
+        # 마지막 프레임도 저장
+        if isinstance(obs, dict) and 'image' in obs:
+            frame = obs['image']
+            if frame.dtype == np.float32 or frame.dtype == np.float64:
+                frame = (frame * 255).astype(np.uint8)
+            if frame.shape[-1] == 4:
+                frame = frame[:, :, :3]
+            frames.append(frame)
+
         episode_rewards.append(episode_reward)
         print(f"Episode {episode + 1}: Reward = {episode_reward:.2f}, Length = {episode_length}")
 
+        # 비디오 저장 (각 에피소드마다)
+        if frames:
+            video_path = video_folder / f"eval-episode-{episode}.mp4"
+            try:
+                imageio.mimsave(str(video_path), frames, fps=30)
+                print(f"  Video saved: {video_path}")
+            except Exception as e:
+                print(f"  Warning: Failed to save video: {e}")
+
     # 통계 출력
-    import numpy as np
     print("\n" + "=" * 60)
     print("EVALUATION RESULTS")
     print("=" * 60)
     print(f"Mean reward: {np.mean(episode_rewards):.2f} ± {np.std(episode_rewards):.2f}")
     print(f"Min reward: {np.min(episode_rewards):.2f}")
     print(f"Max reward: {np.max(episode_rewards):.2f}")
+    print(f"\nVideos saved to: {video_folder}")
 
     env.close()
 

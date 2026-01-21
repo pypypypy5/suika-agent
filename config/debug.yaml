@@ -56,7 +56,7 @@ training:
 
   # 체크포인트
   save_freq: 500            # 모델 저장 빈도 (기본 50000 -> 500)
-  save_path: "experiments/debug_checkpoints"
+  save_path: "experiments/checkpoints"
 
   # 조기 종료
   early_stopping:
