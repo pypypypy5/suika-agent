@@ -3,10 +3,13 @@
 
 이 모듈은 강화학습 에이전트의 표준 인터페이스를 정의합니다.
 모든 구체적인 에이전트 구현은 이 베이스 클래스를 상속받아야 합니다.
+
+중요: 이 프레임워크는 항상 VectorEnv를 가정합니다.
+따라서 모든 입출력은 배치 형태입니다 (num_envs=1도 배치).
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
@@ -18,6 +21,8 @@ class BaseAgent(ABC):
 
     모든 에이전트는 이 인터페이스를 구현해야 합니다.
     환경과의 상호작용을 위한 표준 메서드를 정의합니다.
+
+    중요: VectorEnv를 가정하므로 모든 관찰/행동/보상은 배치 형태입니다.
     """
 
     def __init__(self, observation_space: Any, action_space: Any, config: Optional[Dict] = None):
@@ -36,48 +41,66 @@ class BaseAgent(ABC):
         self.episodes = 0
 
     @abstractmethod
-    def select_action(self, observation: np.ndarray, deterministic: bool = False) -> np.ndarray:
+    def select_action(self, observation: Union[np.ndarray, Dict], deterministic: bool = False) -> np.ndarray:
         """
-        관찰을 받아 행동을 선택
+        관찰 배치를 받아 행동 배치를 선택
 
         Args:
-            observation: 환경의 현재 상태
+            observation: 환경의 현재 상태 (배치)
+                - Dict 형태: {'image': (N, H, W, C), 'score': (N, 1)}
+                - Array 형태: (N, ...)
             deterministic: True면 결정적 정책, False면 확률적 정책
 
         Returns:
-            선택된 행동
+            선택된 행동 배치 (N,) 형태의 ndarray
         """
         pass
 
     @abstractmethod
-    def update(
+    def store_transition(
         self,
-        obs: Optional[np.ndarray] = None,
-        action: Optional[np.ndarray] = None,
-        reward: Optional[float] = None,
-        next_obs: Optional[np.ndarray] = None,
-        done: bool = False
-    ) -> Dict[str, float]:
+        obs: Union[np.ndarray, Dict],
+        action: np.ndarray,
+        reward: np.ndarray,
+        next_obs: Union[np.ndarray, Dict],
+        done: np.ndarray
+    ) -> None:
         """
-        에이전트 학습 업데이트
+        Transition 배치를 저장 (학습과 분리)
 
-        Trainer는 매 스텝마다 이 메서드를 호출합니다.
-        에이전트는 매 스텝 또는 에피소드 단위로 학습할 수 있습니다.
+        이 메서드는 transition을 내부 버퍼에 저장만 하고, 학습은 하지 않습니다.
+        학습은 update() 메서드에서 별도로 수행됩니다.
 
         Args:
-            obs: 현재 관찰
-            action: 선택한 행동
-            reward: 받은 보상
-            next_obs: 다음 관찰
-            done: 에피소드 종료 여부
+            obs: 현재 관찰 배치
+                - Dict: {'image': (N, H, W, C), 'score': (N, 1)}
+                - Array: (N, ...)
+            action: 선택한 행동 배치 (N,)
+            reward: 받은 보상 배치 (N,)
+            next_obs: 다음 관찰 배치 (obs와 동일한 형태)
+            done: 에피소드 종료 여부 배치 (N,)
+
+        Note:
+            배치 크기 N은 VectorEnv의 num_envs와 동일합니다.
+            num_envs=1이어도 배치 형태입니다 (N=1).
+        """
+        pass
+
+    @abstractmethod
+    def update(self) -> Dict[str, float]:
+        """
+        저장된 transition을 사용하여 에이전트 학습
+
+        store_transition()으로 저장된 데이터를 바탕으로 학습을 수행합니다.
+        언제 학습할지는 Trainer가 제어합니다.
 
         Returns:
             학습 메트릭 딕셔너리 (loss 등)
             학습이 일어나지 않았으면 빈 딕셔너리 {} 반환
 
         Note:
-            - DQN 같은 에이전트: 매 스텝 학습 (done과 무관하게 메트릭 반환 가능)
-            - Policy Gradient 에이전트: 에피소드 종료 시에만 학습 (done=True일 때만 메트릭 반환)
+            - DQN 같은 off-policy: 매 N 스텝마다 호출
+            - REINFORCE 같은 on-policy: 에피소드 완료 감지 후 호출
             - Random 에이전트: 학습하지 않음 (항상 {} 반환)
         """
         pass
@@ -161,15 +184,17 @@ class RLAgent(BaseAgent):
         self.policy_net: Optional[nn.Module] = None
         self.optimizer: Optional[torch.optim.Optimizer] = None
 
-    def preprocess_observation(self, obs: np.ndarray) -> torch.Tensor:
+    def preprocess_observation(self, obs: Union[np.ndarray, Dict]) -> torch.Tensor:
         """
-        관찰을 신경망 입력으로 전처리
+        관찰 배치를 신경망 입력으로 전처리
 
         Args:
-            obs: 원본 관찰
+            obs: 원본 관찰 배치
+                - Dict: {'image': (N, H, W, C), 'score': (N, 1)}
+                - Array: (N, ...)
 
         Returns:
-            전처리된 텐서
+            전처리된 텐서 (N, ...)
         """
         if isinstance(obs, dict):
             # 딕셔너리 형태의 관찰 처리
@@ -180,30 +205,37 @@ class RLAgent(BaseAgent):
         if not isinstance(obs, torch.Tensor):
             obs = torch.FloatTensor(obs)
 
-        # 배치 차원이 없으면 추가
-        if obs.dim() == 3:  # (H, W, C)
-            obs = obs.unsqueeze(0)  # (1, H, W, C)
-
         # 이미지면 채널을 앞으로 (PyTorch 컨벤션)
-        if obs.dim() == 4 and obs.shape[-1] in [1, 3, 4]:  # (B, H, W, C)
-            obs = obs.permute(0, 3, 1, 2)  # (B, C, H, W)
+        if obs.dim() == 4 and obs.shape[-1] in [1, 3, 4]:  # (N, H, W, C)
+            obs = obs.permute(0, 3, 1, 2)  # (N, C, H, W)
 
         return obs.to(self.device)
 
-    def select_action(self, observation: np.ndarray, deterministic: bool = False) -> np.ndarray:
+    def select_action(self, observation: Union[np.ndarray, Dict], deterministic: bool = False) -> np.ndarray:
         """
-        관찰을 받아 행동을 선택
+        관찰 배치를 받아 행동 배치를 선택
 
         Args:
-            observation: 환경의 현재 상태
+            observation: 환경의 현재 상태 배치
+                - Dict: {'image': (N, H, W, C), 'score': (N, 1)}
+                - Array: (N, ...)
             deterministic: 결정적 정책 사용 여부
 
         Returns:
-            선택된 행동
+            선택된 행동 배치 (N,)
         """
         if self.policy_net is None:
             # 정책 네트워크가 없으면 랜덤 행동
-            return self.action_space.sample()
+            if isinstance(observation, dict):
+                batch_size = list(observation.values())[0].shape[0]
+            else:
+                batch_size = observation.shape[0]
+
+            from gymnasium import spaces
+            if isinstance(self.action_space, spaces.Discrete):
+                return np.array([self.action_space.sample() for _ in range(batch_size)])
+            else:
+                return np.array([self.action_space.sample() for _ in range(batch_size)])
 
         # 신경망으로 행동 선택
         with torch.no_grad():
@@ -281,18 +313,42 @@ class RandomAgent(BaseAgent):
     성능 비교를 위한 간단한 에이전트
     """
 
-    def select_action(self, observation: np.ndarray, deterministic: bool = False) -> np.ndarray:
-        """랜덤 행동 선택"""
-        return self.action_space.sample()
+    def select_action(self, observation: Union[np.ndarray, Dict], deterministic: bool = False) -> np.ndarray:
+        """
+        랜덤 행동 선택 (배치)
 
-    def update(
+        Args:
+            observation: 배치 관찰
+            deterministic: 무시됨 (항상 랜덤)
+
+        Returns:
+            랜덤 행동 배치 (N,)
+        """
+        # 배치 크기 추출
+        if isinstance(observation, dict):
+            batch_size = list(observation.values())[0].shape[0]
+        else:
+            batch_size = observation.shape[0]
+
+        # 배치 크기만큼 랜덤 행동 생성
+        from gymnasium import spaces
+        if isinstance(self.action_space, spaces.Discrete):
+            return np.array([self.action_space.sample() for _ in range(batch_size)])
+        else:
+            return np.array([self.action_space.sample() for _ in range(batch_size)])
+
+    def store_transition(
         self,
-        obs: Optional[np.ndarray] = None,
-        action: Optional[np.ndarray] = None,
-        reward: Optional[float] = None,
-        next_obs: Optional[np.ndarray] = None,
-        done: bool = False
-    ) -> Dict[str, float]:
+        obs: Union[np.ndarray, Dict],
+        action: np.ndarray,
+        reward: np.ndarray,
+        next_obs: Union[np.ndarray, Dict],
+        done: np.ndarray
+    ) -> None:
+        """랜덤 에이전트는 transition을 저장하지 않음"""
+        pass
+
+    def update(self) -> Dict[str, float]:
         """랜덤 에이전트는 학습하지 않음"""
         return {}
 
