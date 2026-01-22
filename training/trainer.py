@@ -60,12 +60,16 @@ class Trainer:
 
     def train(self) -> None:
         """
-        에이전트 학습 실행
+        에이전트 학습 실행 (VectorEnv 지원)
         """
+        # VectorEnv 감지
+        num_envs = getattr(self.env, 'num_envs', 1)
+
         print("=" * 50)
         print("Starting Training")
         print(f"Total timesteps: {self.total_timesteps}")
         print(f"Agent: {self.agent.__class__.__name__}")
+        print(f"Num environments: {num_envs}")
         print("=" * 50)
 
         # 에이전트를 학습 모드로
@@ -74,78 +78,78 @@ class Trainer:
         # 환경 초기화
         obs, info = self.env.reset()
 
-        episode_reward = 0
-        episode_length = 0
+        # 환경별 통계 (VectorEnv 대응)
+        episode_rewards = [0.0] * num_envs
+        episode_lengths = [0] * num_envs
         episode_num = 0
 
         # 학습 루프
         with tqdm(total=self.total_timesteps, desc="Training") as pbar:
             for step in range(self.total_timesteps):
-                # 행동 선택
-                action = self.agent.select_action(obs, deterministic=False)
+                # 행동 선택 (배치)
+                actions = self.agent.select_action(obs, deterministic=False)
 
-                # 환경 스텝
-                next_obs, reward, terminated, truncated, info = self.env.step(action)
-                done = terminated or truncated
+                # 환경 스텝 (배치)
+                next_obs, rewards, terminated, truncated, info = self.env.step(actions)
+                dones = terminated | truncated
 
-                # 에이전트 업데이트 (구체적인 에이전트 구현에 따라 다름)
-                # 예: 리플레이 버퍼에 저장하고 주기적으로 학습
-                update_info = self.agent.update(
-                    obs=obs,
-                    action=action,
-                    reward=reward,
-                    next_obs=next_obs,
-                    done=done
-                )
+                # Transition 저장 (배치)
+                self.agent.store_transition(obs, actions, rewards, next_obs, dones)
 
-                # 통계 업데이트
-                episode_reward += reward
-                episode_length += 1
-                self.agent.total_steps += 1
+                # 환경별 통계 업데이트
+                for env_id in range(num_envs):
+                    episode_rewards[env_id] += rewards[env_id]
+                    episode_lengths[env_id] += 1
+                    self.agent.total_steps += 1
 
-                # 에피소드 종료
-                if done:
-                    episode_num += 1
-                    self.agent.episodes += 1
+                    # 에피소드 종료
+                    if dones[env_id]:
+                        episode_num += 1
+                        self.agent.episodes += 1
 
-                    # 에피소드 통계 기록
-                    self.episode_rewards.append(episode_reward)
-                    self.episode_lengths.append(episode_length)
+                        # 에피소드 통계 기록
+                        self.episode_rewards.append(episode_rewards[env_id])
+                        self.episode_lengths.append(episode_lengths[env_id])
 
-                    # 로깅
-                    self.logger.log_episode(
-                        episode=episode_num,
-                        episode_reward=episode_reward,
-                        episode_length=episode_length,
-                        additional_metrics={
-                            'best_score': info.get('best_score', 0)
-                        }
-                    )
-
-                    # 콘솔 출력
-                    if episode_num % self.log_interval == 0:
-                        mean_reward = np.mean(self.episode_rewards[-100:])
-                        mean_length = np.mean(self.episode_lengths[-100:])
-                        self.logger.print_progress(
-                            step=step,
-                            total_steps=self.total_timesteps,
-                            metrics={
-                                'episode': episode_num,
-                                'mean_reward': mean_reward,
-                                'mean_length': mean_length
+                        # 로깅
+                        self.logger.log_episode(
+                            episode=episode_num,
+                            episode_reward=episode_rewards[env_id],
+                            episode_length=episode_lengths[env_id],
+                            additional_metrics={
+                                'env_id': env_id,
+                                'best_score': info.get('best_score', [0] * num_envs)[env_id] if isinstance(info.get('best_score'), (list, np.ndarray)) else info.get('best_score', 0)
                             }
                         )
 
-                    # 환경 리셋
-                    obs, info = self.env.reset()
-                    episode_reward = 0
-                    episode_length = 0
-                else:
-                    obs = next_obs
+                        # 콘솔 출력
+                        if episode_num % self.log_interval == 0:
+                            mean_reward = np.mean(self.episode_rewards[-100:])
+                            mean_length = np.mean(self.episode_lengths[-100:])
+                            self.logger.print_progress(
+                                step=step,
+                                total_steps=self.total_timesteps,
+                                metrics={
+                                    'episode': episode_num,
+                                    'mean_reward': mean_reward,
+                                    'mean_length': mean_length
+                                }
+                            )
 
-                # 학습 메트릭 로깅
-                if update_info and step % self.log_interval == 0:
-                    self.logger.log_training(step, update_info.get('loss', 0), update_info)
+                        # 환경별 통계 초기화
+                        episode_rewards[env_id] = 0.0
+                        episode_lengths[env_id] = 0
+
+                # 다음 관찰로 이동
+                obs = next_obs
+
+                # 학습 (주기적으로)
+                if step % self.config.get('training', {}).get('update_frequency', 1) == 0:
+                    update_info = self.agent.update()
+
+                    # 학습 메트릭 로깅
+                    if update_info and step % self.log_interval == 0:
+                        self.logger.log_training(step, update_info.get('loss', 0), update_info)
 
                 # 평가
                 if step > 0 and step % self.eval_freq == 0:
@@ -175,7 +179,7 @@ class Trainer:
 
     def evaluate(self, num_episodes: Optional[int] = None) -> Dict[str, float]:
         """
-        에이전트 평가
+        에이전트 평가 (VectorEnv 지원)
 
         Args:
             num_episodes: 평가 에피소드 수 (None이면 설정값 사용)
@@ -189,35 +193,52 @@ class Trainer:
         # 평가 모드로 전환
         self.agent.eval()
 
+        # VectorEnv 감지
+        num_envs = getattr(self.env, 'num_envs', 1)
+
         eval_rewards = []
         eval_lengths = []
 
-        for _ in range(num_episodes):
-            obs, info = self.env.reset()
-            episode_reward = 0
-            episode_length = 0
-            done = False
+        # 환경별 상태
+        episode_rewards = [0.0] * num_envs
+        episode_lengths = [0] * num_envs
+        episodes_completed = [False] * num_envs
 
-            while not done:
-                # 결정적 행동 선택
-                action = self.agent.select_action(obs, deterministic=True)
-                obs, reward, terminated, truncated, info = self.env.step(action)
-                done = terminated or truncated
+        obs, info = self.env.reset()
 
-                episode_reward += reward
-                episode_length += 1
+        while len(eval_rewards) < num_episodes:
+            # 결정적 행동 선택 (배치)
+            actions = self.agent.select_action(obs, deterministic=True)
 
-            eval_rewards.append(episode_reward)
-            eval_lengths.append(episode_length)
+            # 환경 스텝 (배치)
+            obs, rewards, terminated, truncated, info = self.env.step(actions)
+            dones = terminated | truncated
+
+            # 환경별 처리
+            for env_id in range(num_envs):
+                if not episodes_completed[env_id]:
+                    episode_rewards[env_id] += rewards[env_id]
+                    episode_lengths[env_id] += 1
+
+                    if dones[env_id]:
+                        eval_rewards.append(episode_rewards[env_id])
+                        eval_lengths.append(episode_lengths[env_id])
+
+                        episode_rewards[env_id] = 0.0
+                        episode_lengths[env_id] = 0
+
+                        # 충분한 에피소드 수집 시 해당 환경 비활성화
+                        if len(eval_rewards) >= num_episodes:
+                            episodes_completed[env_id] = True
 
         # 학습 모드로 복귀
         self.agent.train()
 
         metrics = {
-            'mean_reward': np.mean(eval_rewards),
-            'std_reward': np.std(eval_rewards),
-            'mean_length': np.mean(eval_lengths),
-            'std_length': np.std(eval_lengths)
+            'mean_reward': np.mean(eval_rewards[:num_episodes]),
+            'std_reward': np.std(eval_rewards[:num_episodes]),
+            'mean_length': np.mean(eval_lengths[:num_episodes]),
+            'std_length': np.std(eval_lengths[:num_episodes])
         }
 
         return metrics
