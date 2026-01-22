@@ -81,12 +81,12 @@ def create_env(config: dict, num_envs: int = None):
     return vec_env
 
 
-def create_agent(env: SuikaEnvWrapper, config: dict):
+def create_agent(env, config: dict):
     """
     에이전트 생성
 
     Args:
-        env: 환경
+        env: VectorEnv (create_env에서 항상 VectorEnv 반환)
         config: 설정 딕셔너리
 
     Returns:
@@ -95,19 +95,24 @@ def create_agent(env: SuikaEnvWrapper, config: dict):
     agent_config = config.get('agent', {})
     agent_type = agent_config.get('type', 'random')
 
+    # VectorEnv의 single_observation_space와 single_action_space 사용
+    # (환경이 1개든 여러 개든 동일한 인터페이스)
+    obs_space = env.single_observation_space
+    act_space = env.single_action_space
+
     if agent_type == 'random':
         # 랜덤 에이전트 (베이스라인)
         agent = RandomAgent(
-            observation_space=env.observation_space,
-            action_space=env.action_space,
+            observation_space=obs_space,
+            action_space=act_space,
             config=agent_config
         )
         print("Using Random Agent (baseline)")
     elif agent_type == 'simple':
         # 간단한 Policy Gradient 에이전트
         agent = SimpleAgent(
-            observation_space=env.observation_space,
-            action_space=env.action_space,
+            observation_space=obs_space,
+            action_space=act_space,
             config=agent_config
         )
         print("Using Simple Policy Gradient Agent")

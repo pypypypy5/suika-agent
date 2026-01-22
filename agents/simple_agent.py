@@ -165,10 +165,7 @@ class SimpleAgent(RLAgent):
         # 이미지 입력이면 (H, W, C) -> (C, H, W)로 변환
         if len(raw_obs_shape) == 3:
             # 이미지로 가정: (H, W, C) -> (C, H, W)
-            # RGBA(4채널)는 RGB(3채널)로 변환할 것이므로 채널 수 조정
             num_channels = raw_obs_shape[2]
-            if num_channels == 4:
-                num_channels = 3  # RGBA -> RGB
             self.obs_shape = (num_channels, raw_obs_shape[0], raw_obs_shape[1])
         else:
             # 벡터 입력
@@ -226,6 +223,7 @@ class SimpleAgent(RLAgent):
 
         Args:
             obs: 원본 관찰 배치 (N, H, W, C) 또는 (N, features)
+                 이미지는 이미 [0, 1] 범위로 정규화되어 있음 (wrapper에서 처리)
 
         Returns:
             전처리된 텐서 (N, C, H, W) 또는 (N, features)
@@ -235,15 +233,9 @@ class SimpleAgent(RLAgent):
 
         # 이미지면 전처리
         if len(obs_tensor.shape) == 4:  # (N, H, W, C)
-            # RGBA -> RGB (4채널 -> 3채널)
-            if obs_tensor.shape[-1] == 4:
-                obs_tensor = obs_tensor[:, :, :, :3]
-
             # (N, H, W, C) -> (N, C, H, W)
             obs_tensor = obs_tensor.permute(0, 3, 1, 2)
-
-            # 정규화 [0, 255] -> [0, 1]
-            obs_tensor = obs_tensor / 255.0
+            # NOTE: 정규화는 wrapper에서 이미 완료되었으므로 여기서는 하지 않음
 
         return obs_tensor
 

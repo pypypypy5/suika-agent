@@ -34,8 +34,10 @@ class SuikaBrowserEnv(gymnasium.Env):
         self.img_width = 128
         self.img_height = 128
         self.driver = webdriver.Chrome(options=opts)
+        # NOTE: Image shape is (128, 128, 3) RGB, not RGBA
+        # PIL may convert RGBA to RGB during processing
         _obs_dict = {
-            'image': gymnasium.spaces.Box(low=0, high=255, shape=(self.img_height, self.img_width, 4),  dtype="uint8"),
+            'image': gymnasium.spaces.Box(low=0, high=255, shape=(self.img_height, self.img_width, 3),  dtype="uint8"),
             'score': gymnasium.spaces.Box(low=0, high=1000000, shape=(1,), dtype="float32"),
         }
         self.observation_space = gymnasium.spaces.Dict(_obs_dict)

@@ -13,6 +13,7 @@ env:
   reward_scale: 1.0
   normalize_obs: true
   use_mock: false           # true면 Mock 환경 사용 (개발/테스트용)
+  fast_mode: true          # 고속 모드 (물리 시뮬레이션만, 렌더링 비활성화)
   max_episode_steps: 100    # 디버깅용으로 짧게 (기본 1000 -> 100)
 
 # 에이전트 설정

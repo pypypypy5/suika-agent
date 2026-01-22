@@ -92,10 +92,29 @@ class SuikaEnvWrapper(gym.Wrapper):
                 print("Falling back to mock environment.")
                 base_env = self._create_mock_env()
 
-        super().__init__(base_env)
-
         self.observation_type = observation_type
         self.normalize_obs = normalize_obs
+
+        # Observation space 재정의 (normalize_obs에 따라)
+        # VectorEnv와의 호환성을 위해 base_env의 observation space를 직접 수정
+        if normalize_obs:
+            # normalize_obs=True일 때는 float32로 변환되므로 observation space도 float32로 설정
+            if isinstance(base_env.observation_space, gym.spaces.Dict):
+                new_spaces = {}
+                for key, space in base_env.observation_space.spaces.items():
+                    if key == 'image' and isinstance(space, gym.spaces.Box):
+                        # uint8 -> float32 (0-1 범위)
+                        new_spaces[key] = gym.spaces.Box(
+                            low=0.0,
+                            high=1.0,
+                            shape=space.shape,
+                            dtype=np.float32
+                        )
+                    else:
+                        new_spaces[key] = space
+                base_env.observation_space = gym.spaces.Dict(new_spaces)
+
+        super().__init__(base_env)
 
         # Reward 함수 설정
         if reward_fn is None:
