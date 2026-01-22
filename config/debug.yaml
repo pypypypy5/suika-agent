@@ -77,5 +77,5 @@ logging:
 # 시스템 설정
 system:
   device: "auto"            # 'cuda', 'cpu', 'auto'
-  num_workers: 1            # 병렬 환경 수 (기본 4 -> 1, 디버깅 시 단일)
+  num_workers: 4            # 병렬 환경 수
   seed: 42                  # 랜덤 시드

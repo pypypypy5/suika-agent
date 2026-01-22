@@ -84,8 +84,11 @@ class Trainer:
         episode_num = 0
 
         # 학습 루프
+        # total_timesteps는 총 environment interaction 수 (총 sample 수)
+        # num_envs개 환경이 병렬로 실행되므로, 실제 loop 횟수는 total_timesteps / num_envs
+        total_steps = 0
         with tqdm(total=self.total_timesteps, desc="Training") as pbar:
-            for step in range(self.total_timesteps):
+            while total_steps < self.total_timesteps:
                 # 행동 선택 (배치)
                 actions = self.agent.select_action(obs, deterministic=False)
 
@@ -100,6 +103,7 @@ class Trainer:
                 for env_id in range(num_envs):
                     episode_rewards[env_id] += rewards[env_id]
                     episode_lengths[env_id] += 1
+                    total_steps += 1
                     self.agent.total_steps += 1
 
                     # 에피소드 종료
@@ -143,20 +147,23 @@ class Trainer:
                 # 다음 관찰로 이동
                 obs = next_obs
 
+                # Progress bar 업데이트 (num_envs만큼)
+                pbar.update(num_envs)
+
                 # 학습 (주기적으로)
-                if step % self.config.get('training', {}).get('update_frequency', 1) == 0:
+                if total_steps % self.config.get('training', {}).get('update_frequency', 1) == 0:
                     update_info = self.agent.update()
 
                     # 학습 메트릭 로깅
-                    if update_info and step % self.log_interval == 0:
-                        self.logger.log_training(step, update_info.get('loss', 0), update_info)
+                    if update_info and total_steps % self.log_interval == 0:
+                        self.logger.log_training(total_steps, update_info.get('loss', 0), update_info)
 
                 # 평가
-                if step > 0 and step % self.eval_freq == 0:
+                if total_steps > 0 and total_steps % self.eval_freq == 0:
                     eval_metrics = self.evaluate()
                     mean_eval_reward = eval_metrics['mean_reward']
 
-                    print(f"\nEvaluation at step {step}:")
+                    print(f"\nEvaluation at step {total_steps}:")
                     print(f"  Mean reward: {mean_eval_reward:.2f}")
                     print(f"  Mean length: {eval_metrics['mean_length']:.2f}")
 
@@ -167,10 +174,8 @@ class Trainer:
                         print(f"  New best model saved! (reward: {mean_eval_reward:.2f})")
 
                 # 정기 체크포인트 저장
-                if step > 0 and step % self.save_freq == 0:
-                    self.save_checkpoint(f'checkpoint_{step}.pth')
-
-                pbar.update(1)
+                if total_steps > 0 and total_steps % self.save_freq == 0:
+                    self.save_checkpoint(f'checkpoint_{total_steps}.pth')
 
         # 학습 종료
         print("\nTraining completed!")
