@@ -170,9 +170,11 @@ const Game = {
 		Game.elements.previewBall = Game.generateFruitBody(Game.width / 2, 0, 0, { isStatic: true });
 		Composite.add(engine.world, Game.elements.previewBall);
 
+		// OPTIMIZATION: Reduce setTimeout delay in fast mode from 250ms to 10ms
+		const delay = Game.fastMode ? 10 : 250;
 		setTimeout(() => {
 			Game.stateIndex = GameStates.READY;
-		}, 250);
+		}, delay);
 
 		Events.on(mouseConstraint, 'mouseup', function (e) {
 			Game.addFruit(e.mouse.position.x);
@@ -227,6 +229,12 @@ const Game = {
 	},
 
 	addPop: function (x, y, r) {
+		// OPTIMIZATION: Skip pop animations in fast mode (RL training)
+		// Pop animations add visual feedback but slow down training
+		if (Game.fastMode) {
+			return;
+		}
+
 		const circle = Bodies.circle(x, y, r, {
 			isStatic: true,
 			collisionFilter: { mask: 0x0040 },
@@ -293,12 +301,15 @@ const Game = {
 			collisionFilter: { mask: 0x0040 }
 		});
 
+		// OPTIMIZATION: Reduce setTimeout delay in fast mode from 500ms to 50ms
+		// The preview ball doesn't matter much for RL training, and 500ms is unnecessarily long
+		const delay = Game.fastMode ? 50 : 500;
 		setTimeout(() => {
 			if (Game.stateIndex === GameStates.DROP) {
 				Composite.add(engine.world, Game.elements.previewBall);
 				Game.stateIndex = GameStates.READY;
 			}
-		}, 500);
+		}, delay);
 	},
 
 	/**
@@ -441,7 +452,16 @@ const Game = {
 	}
 }
 
-const engine = Engine.create();
+// OPTIMIZATION: Configure physics engine for better performance
+const engine = Engine.create({
+	// Reduce position iterations for faster but slightly less accurate physics
+	// Default is 6, we reduce to 4 for RL training (still stable enough)
+	positionIterations: 4,
+	velocityIterations: 4,
+	// Enable sleeping to reduce computations for stationary bodies
+	enableSleeping: true
+});
+
 const runner = Runner.create();
 const render = Render.create({
 	element: Game.elements.canvas,
