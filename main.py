@@ -31,32 +31,54 @@ def load_config(config_path: str) -> dict:
     return config
 
 
-def create_env(config: dict) -> SuikaEnvWrapper:
+def create_env(config: dict, num_envs: int = None):
     """
-    환경 생성
+    환경 생성 (항상 VectorEnv 반환)
 
     Args:
         config: 설정 딕셔너리
+        num_envs: 환경 개수 (None이면 config.system.num_workers 사용)
 
     Returns:
-        Suika 환경
+        VectorEnv (SyncVectorEnv 또는 AsyncVectorEnv)
     """
+    from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
+
     env_config = config.get('env', {})
+    system_config = config.get('system', {})
 
-    env = SuikaEnvWrapper(
-        headless=env_config.get('headless', True),
-        port=env_config.get('port', 8923),
-        delay_before_img_capture=env_config.get('delay_before_img_capture', 0.5),
-        observation_type=env_config.get('observation_type', 'image'),
-        reward_scale=env_config.get('reward_scale', 1.0),
-        normalize_obs=env_config.get('normalize_obs', True),
-        use_mock=env_config.get('use_mock', False)
-    )
+    if num_envs is None:
+        num_envs = system_config.get('num_workers', 1)
 
-    print(f"Observation space: {env.observation_space}")
-    print(f"Action space: {env.action_space}")
+    def make_env(rank):
+        def _init():
+            return SuikaEnvWrapper(
+                headless=env_config.get('headless', True),
+                port=env_config.get('port', 8923) + rank,  # 각 환경마다 고유 포트
+                delay_before_img_capture=env_config.get('delay_before_img_capture', 0.5),
+                observation_type=env_config.get('observation_type', 'image'),
+                reward_scale=env_config.get('reward_scale', 1.0),
+                normalize_obs=env_config.get('normalize_obs', True),
+                use_mock=env_config.get('use_mock', False),
+                fast_mode=env_config.get('fast_mode', True)
+            )
+        return _init
 
-    return env
+    envs = [make_env(i) for i in range(num_envs)]
+
+    # num_envs=1이면 SyncVectorEnv (오버헤드 최소)
+    # num_envs>1이면 AsyncVectorEnv (병렬 처리)
+    if num_envs == 1:
+        vec_env = SyncVectorEnv(envs)
+        print(f"Created SyncVectorEnv with {num_envs} environment")
+    else:
+        vec_env = AsyncVectorEnv(envs)
+        print(f"Created AsyncVectorEnv with {num_envs} environments")
+
+    print(f"Observation space: {vec_env.single_observation_space}")
+    print(f"Action space: {vec_env.single_action_space}")
+
+    return vec_env
 
 
 def create_agent(env: SuikaEnvWrapper, config: dict):
