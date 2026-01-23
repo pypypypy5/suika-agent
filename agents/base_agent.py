@@ -180,36 +180,83 @@ class RLAgent(BaseAgent):
         self.learning_rate = config.get('learning_rate', 3e-4)
         self.batch_size = config.get('batch_size', 64)
 
+        # Observation space 분석
+        from gymnasium import spaces as gym_spaces
+
+        if isinstance(observation_space, gym_spaces.Dict):
+            # Dict observation space
+            self.is_dict_obs = True
+            self.obs_key = config.get('obs_key', 'image')
+
+            if self.obs_key not in observation_space.spaces:
+                raise ValueError(
+                    f"observation_space에 '{self.obs_key}' 키가 없습니다. "
+                    f"사용 가능한 키: {list(observation_space.spaces.keys())}"
+                )
+
+            raw_obs_shape = observation_space.spaces[self.obs_key].shape
+        else:
+            # 단일 observation space
+            self.is_dict_obs = False
+            self.obs_key = None
+            raw_obs_shape = observation_space.shape
+
+        # Observation shape 계산 (PyTorch 형식: C, H, W)
+        if len(raw_obs_shape) == 3:
+            # 이미지: (H, W, C) -> (C, H, W)
+            num_channels = raw_obs_shape[2]
+            self.obs_shape = (num_channels, raw_obs_shape[0], raw_obs_shape[1])
+        else:
+            # 벡터 입력
+            self.obs_shape = raw_obs_shape
+
         # 신경망 모델 (하위 클래스에서 초기화)
         self.policy_net: Optional[nn.Module] = None
         self.optimizer: Optional[torch.optim.Optimizer] = None
 
-    def preprocess_observation(self, obs: Union[np.ndarray, Dict]) -> torch.Tensor:
+    def extract_observation(self, observation: Union[np.ndarray, Dict]) -> np.ndarray:
         """
-        관찰 배치를 신경망 입력으로 전처리
+        Dict observation에서 실제 관찰 추출 (NumPy 유지)
 
         Args:
-            obs: 원본 관찰 배치
+            observation: 환경의 관찰 (Dict 또는 array)
                 - Dict: {'image': (N, H, W, C), 'score': (N, 1)}
                 - Array: (N, ...)
 
         Returns:
-            전처리된 텐서 (N, ...)
+            추출된 관찰 array (N, H, W, C) 또는 (N, ...)
         """
-        if isinstance(obs, dict):
-            # 딕셔너리 형태의 관찰 처리
-            # 예: {'image': ..., 'score': ...}
-            obs = obs.get('image', list(obs.values())[0])
+        if self.is_dict_obs and isinstance(observation, dict):
+            if self.obs_key and self.obs_key in observation:
+                return observation[self.obs_key]
+            else:
+                # Fallback: 첫 번째 값 사용
+                return list(observation.values())[0]
+        return observation
 
-        # NumPy 배열을 텐서로 변환
-        if not isinstance(obs, torch.Tensor):
-            obs = torch.FloatTensor(obs)
+    def preprocess_observation(self, obs: Union[np.ndarray, Dict]) -> torch.Tensor:
+        """
+        관찰을 신경망 입력으로 전처리 (Dict → NumPy → Tensor)
 
-        # 이미지면 채널을 앞으로 (PyTorch 컨벤션)
-        if obs.dim() == 4 and obs.shape[-1] in [1, 3, 4]:  # (N, H, W, C)
-            obs = obs.permute(0, 3, 1, 2)  # (N, C, H, W)
+        Args:
+            obs: 원본 관찰 배치
+                - Dict: {'image': (N, H, W, C), 'score': (N, 1)}
+                - Array: (N, H, W, C) 또는 (N, features)
 
-        return obs.to(self.device)
+        Returns:
+            전처리된 텐서 (N, C, H, W) 또는 (N, features)
+        """
+        # 1. Dict에서 추출
+        obs_array = self.extract_observation(obs)
+
+        # 2. NumPy to Tensor
+        obs_tensor = torch.FloatTensor(obs_array).to(self.device)
+
+        # 3. 이미지면 채널 순서 변경
+        if len(obs_tensor.shape) == 4:  # (N, H, W, C)
+            obs_tensor = obs_tensor.permute(0, 3, 1, 2)  # (N, C, H, W)
+
+        return obs_tensor
 
     def select_action(self, observation: Union[np.ndarray, Dict], deterministic: bool = False) -> np.ndarray:
         """
