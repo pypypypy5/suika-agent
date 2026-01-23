@@ -141,36 +141,6 @@ class SimpleAgent(RLAgent):
                 f"받은 타입: {type(action_space)}"
             )
 
-        # 관찰 공간 shape 확인 및 설정
-        from gymnasium import spaces as gym_spaces
-
-        if isinstance(observation_space, gym_spaces.Dict):
-            # Dict observation space - 'image' 키 사용
-            self.is_dict_obs = True
-            self.obs_key = config.get('obs_key', 'image')
-
-            if self.obs_key not in observation_space.spaces:
-                raise ValueError(
-                    f"observation_space에 '{self.obs_key}' 키가 없습니다. "
-                    f"사용 가능한 키: {list(observation_space.spaces.keys())}"
-                )
-
-            raw_obs_shape = observation_space.spaces[self.obs_key].shape
-        else:
-            # 단일 observation space
-            self.is_dict_obs = False
-            self.obs_key = None
-            raw_obs_shape = observation_space.shape
-
-        # 이미지 입력이면 (H, W, C) -> (C, H, W)로 변환
-        if len(raw_obs_shape) == 3:
-            # 이미지로 가정: (H, W, C) -> (C, H, W)
-            num_channels = raw_obs_shape[2]
-            self.obs_shape = (num_channels, raw_obs_shape[0], raw_obs_shape[1])
-        else:
-            # 벡터 입력
-            self.obs_shape = raw_obs_shape
-
         # 네트워크 설정
         hidden_dim = config.get('network', {}).get('hidden_dims', [128])[0] if 'network' in config else 128
 
@@ -188,56 +158,11 @@ class SimpleAgent(RLAgent):
         )
 
         # 환경별 에피소드 버퍼
-        self.episode_buffers: Dict[int, Dict[str, List]] = {}  # {env_id: {'log_probs': [], 'rewards': []}}
+        self.episode_buffers: Dict[int, Dict[str, List]] = {}  # {env_id: {'observations': [], 'actions': [], 'rewards': []}}
         self.completed_episodes: set = set()  # 학습 준비된 에피소드들
 
         # 통계
         self.episode_rewards = []
-
-    def _extract_observation(self, observation: Union[np.ndarray, Dict]) -> np.ndarray:
-        """
-        Dict observation에서 실제 관찰 추출
-
-        Args:
-            observation: 환경의 관찰 (Dict 또는 array)
-                - Dict: {'image': (N, H, W, C), 'score': (N, 1)}
-                - Array: (N, ...)
-
-        Returns:
-            추출된 관찰 array (N, H, W, C) 또는 (N, ...)
-        """
-        if isinstance(observation, dict):
-            if self.obs_key and self.obs_key in observation:
-                obs = observation[self.obs_key]
-            else:
-                # 첫 번째 값 사용
-                obs = list(observation.values())[0]
-        else:
-            obs = observation
-
-        return obs
-
-    def _preprocess_observation(self, obs: np.ndarray) -> torch.Tensor:
-        """
-        관찰 배치를 신경망 입력으로 전처리
-
-        Args:
-            obs: 원본 관찰 배치 (N, H, W, C) 또는 (N, features)
-                 이미지는 이미 [0, 1] 범위로 정규화되어 있음 (wrapper에서 처리)
-
-        Returns:
-            전처리된 텐서 (N, C, H, W) 또는 (N, features)
-        """
-        # NumPy to Tensor
-        obs_tensor = torch.FloatTensor(obs).to(self.device)
-
-        # 이미지면 전처리
-        if len(obs_tensor.shape) == 4:  # (N, H, W, C)
-            # (N, H, W, C) -> (N, C, H, W)
-            obs_tensor = obs_tensor.permute(0, 3, 1, 2)
-            # NOTE: 정규화는 wrapper에서 이미 완료되었으므로 여기서는 하지 않음
-
-        return obs_tensor
 
     def select_action(self, observation: Union[np.ndarray, Dict], deterministic: bool = False) -> np.ndarray:
         """
@@ -252,9 +177,8 @@ class SimpleAgent(RLAgent):
         Returns:
             선택된 행동 배치 (N,)
         """
-        # 관찰 추출 및 전처리
-        obs = self._extract_observation(observation)
-        obs_tensor = self._preprocess_observation(obs)  # (N, C, H, W)
+        # Base Agent의 전처리 메서드 사용
+        obs_tensor = self.preprocess_observation(observation)  # (N, C, H, W)
 
         # 네트워크 forward
         with torch.no_grad():
@@ -308,40 +232,30 @@ class SimpleAgent(RLAgent):
             # 버퍼 초기화
             if env_id not in self.episode_buffers:
                 self.episode_buffers[env_id] = {
-                    'log_probs': [],
+                    'observations': [],
+                    'actions': [],
                     'rewards': []
                 }
 
-            # 학습 모드일 때만 log_prob 계산
+            # 학습 모드일 때만 저장
             if self.policy_net.training:
-                # 단일 관찰 추출
+                # 단일 관찰 저장
                 if isinstance(obs, dict):
                     single_obs = {k: v[env_id:env_id+1] for k, v in obs.items()}
                 else:
                     single_obs = obs[env_id:env_id+1]
 
-                # 전처리
-                obs_extracted = self._extract_observation(single_obs)
-                obs_tensor = self._preprocess_observation(obs_extracted)  # (1, C, H, W)
-
-                # Log prob 계산
-                logits = self.policy_net(obs_tensor)  # (1, action_dim)
-                probs = F.softmax(logits, dim=-1)  # (1, action_dim)
-                dist = Categorical(probs=probs)
-
-                # 행동을 텐서로 변환
+                # 행동 값 저장
                 if self.is_discrete_env:
                     action_value = int(action[env_id])
                 else:
                     # Box action space: 연속 값을 이산 인덱스로 역변환
                     continuous_value = action[env_id][0] if len(action[env_id].shape) > 0 else action[env_id]
-                    action_value = np.argmin(np.abs(self.discrete_to_continuous - continuous_value))
-
-                action_tensor = torch.tensor([action_value], device=self.device)
-                log_prob = dist.log_prob(action_tensor)  # (1,)
+                    action_value = int(np.argmin(np.abs(self.discrete_to_continuous - continuous_value)))
 
                 # 저장
-                self.episode_buffers[env_id]['log_probs'].append(log_prob)
+                self.episode_buffers[env_id]['observations'].append(single_obs)
+                self.episode_buffers[env_id]['actions'].append(action_value)
                 self.episode_buffers[env_id]['rewards'].append(float(reward[env_id]))
 
             # 에피소드 종료 시
@@ -350,7 +264,7 @@ class SimpleAgent(RLAgent):
                     self.completed_episodes.add(env_id)
                 else:
                     # 평가 모드거나 빈 버퍼면 초기화
-                    self.episode_buffers[env_id] = {'log_probs': [], 'rewards': []}
+                    self.episode_buffers[env_id] = {'observations': [], 'actions': [], 'rewards': []}
 
     def update(self) -> Dict[str, float]:
         """
@@ -389,8 +303,22 @@ class SimpleAgent(RLAgent):
             if len(returns) > 1:
                 returns = (returns - returns.mean()) / (returns.std() + 1e-8)
 
-            # Log probs 수집
-            log_probs = torch.cat(buffer['log_probs'])  # (T,)
+            # Log probs 재계산 (gradient를 위해 필요)
+            log_probs = []
+            for obs, act in zip(buffer['observations'], buffer['actions']):
+                # 전처리
+                obs_tensor = self.preprocess_observation(obs)  # (1, C, H, W)
+
+                # Log prob 계산
+                logits = self.policy_net(obs_tensor)  # (1, action_dim)
+                probs = F.softmax(logits, dim=-1)  # (1, action_dim)
+                dist = Categorical(probs=probs)
+
+                action_tensor = torch.tensor([act], device=self.device)
+                log_prob = dist.log_prob(action_tensor)  # (1,)
+                log_probs.append(log_prob)
+
+            log_probs = torch.cat(log_probs)  # (T,)
 
             all_log_probs.append(log_probs)
             all_returns.append(returns)
@@ -402,7 +330,7 @@ class SimpleAgent(RLAgent):
             self.episode_rewards.append(sum(buffer['rewards']))
 
             # 버퍼 초기화
-            self.episode_buffers[env_id] = {'log_probs': [], 'rewards': []}
+            self.episode_buffers[env_id] = {'observations': [], 'actions': [], 'rewards': []}
 
         # 최적화 (모든 완료된 에피소드에 대해 한번에)
         if num_episodes > 0:

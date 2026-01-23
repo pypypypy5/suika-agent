@@ -194,55 +194,67 @@ def evaluate(config: dict, checkpoint_path: str) -> None:
 
     print(f"\nEvaluating for {num_eval_episodes} episodes...")
 
+    # VectorEnv의 환경 개수 확인
+    num_envs = env.num_envs
+
     episode_rewards = []
-    for episode in range(num_eval_episodes):
-        obs, info = env.reset()
-        episode_reward = 0
-        episode_length = 0
-        done = False
+    episodes_completed = 0
 
-        # 프레임 저장을 위한 리스트 (수동 비디오 저장)
-        frames = []
+    # 환경별 상태 추적
+    env_episode_rewards = [0.0] * num_envs
+    env_episode_lengths = [0] * num_envs
+    env_frames = [[] for _ in range(num_envs)]
 
-        while not done:
-            # 현재 프레임 저장 (observation에서 'image' 추출)
-            if isinstance(obs, dict) and 'image' in obs:
-                frame = obs['image']
-                # 정규화된 이미지를 uint8로 변환
-                if frame.dtype == np.float32 or frame.dtype == np.float64:
-                    frame = (frame * 255).astype(np.uint8)
-                # RGBA를 RGB로 변환 (alpha 채널 제거)
-                if frame.shape[-1] == 4:
-                    frame = frame[:, :, :3]
-                frames.append(frame)
+    obs, info = env.reset()
 
-            action = agent.select_action(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = env.step(action)
-            done = terminated or truncated
-
-            episode_reward += reward
-            episode_length += 1
-
-        # 마지막 프레임도 저장
-        if isinstance(obs, dict) and 'image' in obs:
-            frame = obs['image']
+    while episodes_completed < num_eval_episodes:
+        # 현재 프레임 저장 (첫 번째 환경만)
+        if episodes_completed < num_eval_episodes and isinstance(obs, dict) and 'image' in obs:
+            frame = obs['image'][0]  # 첫 번째 환경의 프레임
+            # 정규화된 이미지를 uint8로 변환
             if frame.dtype == np.float32 or frame.dtype == np.float64:
                 frame = (frame * 255).astype(np.uint8)
+            # RGBA를 RGB로 변환 (alpha 채널 제거)
             if frame.shape[-1] == 4:
                 frame = frame[:, :, :3]
-            frames.append(frame)
+            env_frames[0].append(frame)
 
-        episode_rewards.append(episode_reward)
-        print(f"Episode {episode + 1}: Reward = {episode_reward:.2f}, Length = {episode_length}")
+        action = agent.select_action(obs, deterministic=True)
+        obs, reward, terminated, truncated, info = env.step(action)
 
-        # 비디오 저장 (각 에피소드마다)
-        if frames:
-            video_path = video_folder / f"eval-episode-{episode}.mp4"
-            try:
-                imageio.mimsave(str(video_path), frames, fps=30)
-                print(f"  Video saved: {video_path}")
-            except Exception as e:
-                print(f"  Warning: Failed to save video: {e}")
+        # 배열 처리
+        done = np.logical_or(terminated, truncated)
+
+        # 각 환경별로 보상과 길이 누적
+        for i in range(num_envs):
+            if episodes_completed < num_eval_episodes:
+                env_episode_rewards[i] += reward[i]
+                env_episode_lengths[i] += 1
+
+        # 에피소드 완료 처리
+        for i in range(num_envs):
+            if done[i] and episodes_completed < num_eval_episodes:
+                episode_rewards.append(env_episode_rewards[i])
+                print(f"Episode {episodes_completed + 1}: Reward = {env_episode_rewards[i]:.2f}, Length = {env_episode_lengths[i]}")
+
+                # 비디오 저장 (첫 번째 환경만)
+                if i == 0 and env_frames[i]:
+                    video_path = video_folder / f"eval-episode-{episodes_completed}.mp4"
+                    try:
+                        imageio.mimsave(str(video_path), env_frames[i], fps=30)
+                        print(f"  Video saved: {video_path}")
+                    except Exception as e:
+                        print(f"  Warning: Failed to save video: {e}")
+
+                episodes_completed += 1
+
+                # 초기화
+                env_episode_rewards[i] = 0.0
+                env_episode_lengths[i] = 0
+                env_frames[i] = []
+
+                if episodes_completed >= num_eval_episodes:
+                    break
 
     # 통계 출력
     print("\n" + "=" * 60)
