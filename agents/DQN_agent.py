@@ -31,11 +31,11 @@ class ReplayBuffer:
       def __len__(self):
           return len(self.buffer)
 
-class DQNPolicyNetwork(nn.Module):
+class DQNNetwork(nn.Module):
     """
-    간단한 정책 네트워크
+    DQN Q-Network
 
-    관찰 배치를 입력받아 행동 확률 배치를 출력합니다.
+    관찰 배치를 입력받아 각 행동의 Q-값 배치를 출력합니다.
     """
 
     def __init__(self, obs_shape: Tuple, action_dim: int, hidden_dim: int = 128):
@@ -92,21 +92,23 @@ class DQNPolicyNetwork(nn.Module):
             x: 입력 관찰 (N, C, H, W) 또는 (N, features)
 
         Returns:
-            행동 로짓 (N, action_dim)
+            Q-values (N, action_dim) - 각 행동의 가치 추정
         """
         features = self.encoder(x)
-        logits = self.fc(features)
-        return logits
+        q_values = self.fc(features)
+        return q_values
 
 
 class DQNAgent(RLAgent):
     """
-    Simple Policy Gradient Agent (VectorEnv 지원)
+    DQN (Deep Q-Network) Agent (VectorEnv 지원)
 
-    REINFORCE 알고리즘의 간단한 구현입니다.
-    - 에피소드 단위로 학습
-    - Monte Carlo return 사용
-    - VectorEnv의 각 환경별로 독립적인 버퍼 유지
+    DQN 알고리즘의 구현입니다.
+    - Experience Replay Buffer 사용
+    - Target Network로 학습 안정화
+    - Epsilon-greedy exploration
+    - TD Learning (Temporal Difference)
+    - VectorEnv의 각 환경에서 transition 수집
     """
 
     def __init__(
@@ -156,12 +158,22 @@ class DQNAgent(RLAgent):
         # 네트워크 설정
         hidden_dim = config.get('network', {}).get('hidden_dims', [128])[0] if 'network' in config else 128
 
-        # 정책 네트워크 생성
-        self.policy_net = DQNPolicyNetwork(
+        # Q-Networks (Policy + Target)
+        self.policy_net = DQNNetwork(
             obs_shape=self.obs_shape,
             action_dim=self.action_dim,
             hidden_dim=hidden_dim
         ).to(self.device)
+
+        self.target_net = DQNNetwork(
+            obs_shape=self.obs_shape,
+            action_dim=self.action_dim,
+            hidden_dim=hidden_dim
+        ).to(self.device)
+
+        # Target network를 policy network로 초기화
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.eval()  # Target network는 항상 eval 모드
 
         # 옵티마이저
         self.optimizer = torch.optim.Adam(
@@ -169,44 +181,54 @@ class DQNAgent(RLAgent):
             lr=self.learning_rate
         )
 
-        # 환경별 에피소드 버퍼
-        self.episode_buffers: Dict[int, Dict[str, List]] = {}  # {env_id: {'observations': [], 'actions': [], 'rewards': []}}
-        self.completed_episodes: set = set()  # 학습 준비된 에피소드들
+        # Epsilon-greedy 파라미터
+        self.epsilon = config.get('epsilon_start', 1.0)
+        self.epsilon_min = config.get('epsilon_min', 0.1)
+        self.epsilon_decay = config.get('epsilon_decay', 0.995)
+
+        # Target network 업데이트 빈도
+        self.target_update_freq = config.get('target_update_freq', 1000)
+        self.update_counter = 0
+
+        # Replay Buffer
+        buffer_capacity = config.get('buffer_capacity', 100000)
+        self.replay_buffer = ReplayBuffer(capacity=buffer_capacity)
 
         # 통계
         self.episode_rewards = []
 
     def select_action(self, observation: Union[np.ndarray, Dict], deterministic: bool = False) -> np.ndarray:
         """
-        관찰 배치를 받아 행동 배치 선택
+        관찰 배치를 받아 행동 배치 선택 (Epsilon-greedy)
 
         Args:
             observation: 환경의 관찰 배치
                 - Dict: {'image': (N, H, W, C), 'score': (N, 1)}
                 - Array: (N, ...)
-            deterministic: True면 결정적 행동, False면 확률적 행동
+            deterministic: True면 greedy (argmax), False면 epsilon-greedy
 
         Returns:
             선택된 행동 배치 (N,)
         """
-        # Base Agent의 전처리 메서드 사용
-        obs_tensor = self.preprocess_observation(observation)  # (N, C, H, W)
+        # 배치 크기 확인
+        if isinstance(observation, dict):
+            batch_size = list(observation.values())[0].shape[0]
+        else:
+            batch_size = observation.shape[0]
 
-        # 네트워크 forward
-        with torch.no_grad():
-            logits = self.policy_net(obs_tensor)  # (N, action_dim)
-            probs = F.softmax(logits, dim=-1)  # (N, action_dim)
+        # Epsilon-greedy
+        if not deterministic and np.random.random() < self.epsilon:
+            # exploration
+            discrete_actions_np = np.random.randint(0, self.action_dim, size=batch_size)
+        else:
+            # exploitation
+            obs_tensor = self.preprocess_observation(observation)  # (N, C, H, W)
 
-            if deterministic:
-                # 결정적: argmax
-                discrete_actions = probs.argmax(dim=1)  # (N,)
-            else:
-                # 확률적: 샘플링
-                dist = Categorical(probs=probs)
-                discrete_actions = dist.sample()  # (N,)
+            with torch.no_grad():
+                q_values = self.policy_net(obs_tensor)  # (N, action_dim)
+                discrete_actions = q_values.argmax(dim=1)  # (N,) - 최대 Q값 행동 선택
 
-        # numpy로 변환
-        discrete_actions_np = discrete_actions.cpu().numpy()  # (N,)
+            discrete_actions_np = discrete_actions.cpu().numpy()  # (N,)
 
         # 환경의 action space에 맞게 변환
         if self.is_discrete_env:
@@ -226,7 +248,7 @@ class DQNAgent(RLAgent):
         done: np.ndarray
     ) -> None:
         """
-        Transition 배치를 환경별로 저장
+        Transition 배치를 Replay Buffer에 저장 (DQN)
 
         Args:
             obs: 현재 관찰 배치
@@ -237,168 +259,96 @@ class DQNAgent(RLAgent):
             next_obs: 다음 관찰 배치
             done: 에피소드 종료 여부 배치 (N,)
         """
+        # 학습 모드일 때만 저장
+        if not self.policy_net.training:
+            return
+
         batch_size = len(done)
 
-        # 각 환경마다 처리
+        # 관찰 추출 (Dict -> Array)
+        obs_array = self.extract_observation(obs)  # (N, H, W, C)
+        next_obs_array = self.extract_observation(next_obs)  # (N, H, W, C)
+
+        # 각 환경마다 replay buffer에 저장
         for env_id in range(batch_size):
-            # 버퍼 초기화
-            if env_id not in self.episode_buffers:
-                self.episode_buffers[env_id] = {
-                    'observations': [],
-                    'actions': [],
-                    'rewards': []
-                }
+            # 행동 값 변환
+            if self.is_discrete_env:
+                action_value = int(action[env_id])
+            else:
+                # Box action space: 연속 값을 이산 인덱스로 역변환
+                continuous_value = action[env_id][0] if len(action[env_id].shape) > 0 else action[env_id]
+                action_value = int(np.argmin(np.abs(self.discrete_to_continuous - continuous_value)))
 
-            # 학습 모드일 때만 저장
-            if self.policy_net.training:
-                # 단일 관찰 저장
-                if isinstance(obs, dict):
-                    single_obs = {k: v[env_id:env_id+1] for k, v in obs.items()}
-                else:
-                    single_obs = obs[env_id:env_id+1]
-
-                # 행동 값 저장
-                if self.is_discrete_env:
-                    action_value = int(action[env_id])
-                else:
-                    # Box action space: 연속 값을 이산 인덱스로 역변환
-                    continuous_value = action[env_id][0] if len(action[env_id].shape) > 0 else action[env_id]
-                    action_value = int(np.argmin(np.abs(self.discrete_to_continuous - continuous_value)))
-
-                # 저장
-                self.episode_buffers[env_id]['observations'].append(single_obs)
-                self.episode_buffers[env_id]['actions'].append(action_value)
-                self.episode_buffers[env_id]['rewards'].append(float(reward[env_id]))
-
-            # 에피소드 종료 시
-            if done[env_id]:
-                if self.policy_net.training and len(self.episode_buffers[env_id]['rewards']) > 0:
-                    self.completed_episodes.add(env_id)
-                else:
-                    # 평가 모드거나 빈 버퍼면 초기화
-                    self.episode_buffers[env_id] = {'observations': [], 'actions': [], 'rewards': []}
+            # Replay buffer에 저장
+            self.replay_buffer.push(
+                state=obs_array[env_id],          # (H, W, C)
+                action=action_value,               # int
+                reward=float(reward[env_id]),      # float
+                next_state=next_obs_array[env_id], # (H, W, C)
+                done=float(done[env_id])           # float (0 or 1)
+            )
 
     def update(self) -> Dict[str, float]:
         """
-        완료된 에피소드들에 대해 REINFORCE 학습
+        Replay Buffer에서 샘플링하여 DQN 학습 (TD Learning)
 
         Returns:
-            {'loss': float, 'num_episodes_updated': int}
+            {'loss': float, 'epsilon': float} 또는 {}
         """
-        if not self.completed_episodes:
+        # Replay buffer에 충분한 데이터가 없으면 학습 스킵
+        if len(self.replay_buffer) < self.batch_size:
             return {}
 
-        total_loss = 0.0
-        num_episodes = 0
-        total_reward = 0.0
+        # 1. Replay buffer에서 랜덤 샘플링
+        states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
 
-        # 모든 에피소드의 loss를 모아서 한번에 최적화
-        all_log_probs = []
-        all_returns = []
+        # 2. NumPy to Tensor 변환
+        states = torch.FloatTensor(states).to(self.device)  # (batch, H, W, C)
+        actions = torch.LongTensor(actions).to(self.device)  # (batch,)
+        rewards = torch.FloatTensor(rewards).to(self.device)  # (batch,)
+        next_states = torch.FloatTensor(next_states).to(self.device)  # (batch, H, W, C)
+        dones = torch.FloatTensor(dones).to(self.device)  # (batch,)
 
-        for env_id in list(self.completed_episodes):
-            buffer = self.episode_buffers[env_id]
+        # 3. 이미지 전처리: (batch, H, W, C) -> (batch, C, H, W)
+        if len(states.shape) == 4:
+            states = states.permute(0, 3, 1, 2)
+            next_states = next_states.permute(0, 3, 1, 2)
 
-            if len(buffer['rewards']) == 0:
-                continue
+        # 4. Current Q-values: Q(s, a)
+        current_q_values = self.policy_net(states)  # (batch, action_dim)
+        current_q = current_q_values.gather(1, actions.unsqueeze(1)).squeeze(1)  # (batch,)
 
-            # Monte Carlo returns 계산
-            returns = []
-            G = 0
-            for r in reversed(buffer['rewards']):
-                G = r + self.gamma * G
-                returns.insert(0, G)
+        # 5. Target Q-values: r + γ * max_a' Q_target(s', a')
+        with torch.no_grad():
+            next_q_values = self.target_net(next_states)  # (batch, action_dim)
+            next_q = next_q_values.max(1)[0]  # (batch,) - 최대 Q값
+            target_q = rewards + self.gamma * next_q * (1 - dones)  # (batch,)
 
-            returns = torch.tensor(returns, device=self.device)
+        # 6. Loss 계산 (Huber Loss = Smooth L1)
+        loss = F.smooth_l1_loss(current_q, target_q)
 
-            # 정규화
-            if len(returns) > 1:
-                returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+        # 7. 역전파
+        self.optimizer.zero_grad()
+        loss.backward()
 
-            # Log probs 재계산 (gradient를 위해 필요)
-            log_probs = []
-            for obs, act in zip(buffer['observations'], buffer['actions']):
-                # 전처리
-                obs_tensor = self.preprocess_observation(obs)  # (1, C, H, W)
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=10.0)
 
-                # Log prob 계산
-                logits = self.policy_net(obs_tensor)  # (1, action_dim)
-                probs = F.softmax(logits, dim=-1)  # (1, action_dim)
-                dist = Categorical(probs=probs)
+        self.optimizer.step()
 
-                action_tensor = torch.tensor([act], device=self.device)
-                log_prob = dist.log_prob(action_tensor)  # (1,)
-                log_probs.append(log_prob)
+        # 8. Epsilon 감소 (exploration → exploitation)
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-            log_probs = torch.cat(log_probs)  # (T,)
-
-            all_log_probs.append(log_probs)
-            all_returns.append(returns)
-
-            num_episodes += 1
-            total_reward += sum(buffer['rewards'])
-
-            # 통계 저장
-            self.episode_rewards.append(sum(buffer['rewards']))
-
-            # 버퍼 초기화
-            self.episode_buffers[env_id] = {'observations': [], 'actions': [], 'rewards': []}
-
-        # 최적화 (모든 완료된 에피소드에 대해 한번에)
-        if num_episodes > 0:
-            # 모든 log_probs와 returns 합치기
-            combined_log_probs = torch.cat(all_log_probs)
-            combined_returns = torch.cat(all_returns)
-
-            # Policy gradient loss
-            loss = -(combined_log_probs * combined_returns).mean()
-
-            # 역전파
-            self.optimizer.zero_grad()
-            loss.backward()
-
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
-
-            self.optimizer.step()
-
-            total_loss = loss.item()
-
-        # 학습 완료된 에피소드 제거
-        self.completed_episodes.clear()
-
-        if num_episodes == 0:
-            return {}
+        # 9. Target network 주기적 업데이트
+        self.update_counter += 1
+        if self.update_counter % self.target_update_freq == 0:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
 
         return {
-            'loss': total_loss,
-            'num_episodes_updated': num_episodes,
-            'mean_episode_reward': total_reward / num_episodes
+            'loss': loss.item(),
+            'epsilon': self.epsilon,
+            'q_mean': current_q.mean().item()
         }
-
-    def _forward_policy(self, obs: torch.Tensor, deterministic: bool) -> torch.Tensor:
-        """
-        정책 네트워크를 통해 행동 배치 선택
-
-        Args:
-            obs: 전처리된 관찰 배치 (N, C, H, W)
-            deterministic: True면 가장 높은 확률의 행동 선택
-
-        Returns:
-            선택된 행동 배치 (N,)
-        """
-        logits = self.policy_net(obs)  # (N, action_dim)
-
-        if deterministic:
-            # 결정적: argmax
-            action = torch.argmax(logits, dim=-1)  # (N,)
-        else:
-            # 확률적: 샘플링
-            probs = F.softmax(logits, dim=-1)  # (N, action_dim)
-            dist = Categorical(probs=probs)
-            action = dist.sample()  # (N,)
-
-        return action
 
     def get_statistics(self) -> Dict:
         """
@@ -409,9 +359,8 @@ class DQNAgent(RLAgent):
         """
         stats = super().get_statistics()
 
-        if len(self.episode_rewards) > 0:
-            stats['mean_episode_reward'] = np.mean(self.episode_rewards[-100:])
-            stats['max_episode_reward'] = np.max(self.episode_rewards)
-            stats['min_episode_reward'] = np.min(self.episode_rewards)
+        # DQN 특화 통계
+        stats['epsilon'] = self.epsilon
+        stats['buffer_size'] = len(self.replay_buffer)
 
         return stats
