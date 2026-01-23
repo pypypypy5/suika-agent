@@ -158,7 +158,7 @@ class SimpleAgent(RLAgent):
         )
 
         # 환경별 에피소드 버퍼
-        self.episode_buffers: Dict[int, Dict[str, List]] = {}  # {env_id: {'log_probs': [], 'rewards': []}}
+        self.episode_buffers: Dict[int, Dict[str, List]] = {}  # {env_id: {'observations': [], 'actions': [], 'rewards': []}}
         self.completed_episodes: set = set()  # 학습 준비된 에피소드들
 
         # 통계
@@ -232,39 +232,30 @@ class SimpleAgent(RLAgent):
             # 버퍼 초기화
             if env_id not in self.episode_buffers:
                 self.episode_buffers[env_id] = {
-                    'log_probs': [],
+                    'observations': [],
+                    'actions': [],
                     'rewards': []
                 }
 
-            # 학습 모드일 때만 log_prob 계산
+            # 학습 모드일 때만 저장
             if self.policy_net.training:
-                # 단일 관찰 추출
+                # 단일 관찰 저장
                 if isinstance(obs, dict):
                     single_obs = {k: v[env_id:env_id+1] for k, v in obs.items()}
                 else:
                     single_obs = obs[env_id:env_id+1]
 
-                # Base Agent의 전처리 메서드 사용
-                obs_tensor = self.preprocess_observation(single_obs)  # (1, C, H, W)
-
-                # Log prob 계산
-                logits = self.policy_net(obs_tensor)  # (1, action_dim)
-                probs = F.softmax(logits, dim=-1)  # (1, action_dim)
-                dist = Categorical(probs=probs)
-
-                # 행동을 텐서로 변환
+                # 행동 값 저장
                 if self.is_discrete_env:
                     action_value = int(action[env_id])
                 else:
                     # Box action space: 연속 값을 이산 인덱스로 역변환
                     continuous_value = action[env_id][0] if len(action[env_id].shape) > 0 else action[env_id]
-                    action_value = np.argmin(np.abs(self.discrete_to_continuous - continuous_value))
-
-                action_tensor = torch.tensor([action_value], device=self.device)
-                log_prob = dist.log_prob(action_tensor)  # (1,)
+                    action_value = int(np.argmin(np.abs(self.discrete_to_continuous - continuous_value)))
 
                 # 저장
-                self.episode_buffers[env_id]['log_probs'].append(log_prob)
+                self.episode_buffers[env_id]['observations'].append(single_obs)
+                self.episode_buffers[env_id]['actions'].append(action_value)
                 self.episode_buffers[env_id]['rewards'].append(float(reward[env_id]))
 
             # 에피소드 종료 시
@@ -273,7 +264,7 @@ class SimpleAgent(RLAgent):
                     self.completed_episodes.add(env_id)
                 else:
                     # 평가 모드거나 빈 버퍼면 초기화
-                    self.episode_buffers[env_id] = {'log_probs': [], 'rewards': []}
+                    self.episode_buffers[env_id] = {'observations': [], 'actions': [], 'rewards': []}
 
     def update(self) -> Dict[str, float]:
         """
@@ -312,8 +303,22 @@ class SimpleAgent(RLAgent):
             if len(returns) > 1:
                 returns = (returns - returns.mean()) / (returns.std() + 1e-8)
 
-            # Log probs 수집
-            log_probs = torch.cat(buffer['log_probs'])  # (T,)
+            # Log probs 재계산 (gradient를 위해 필요)
+            log_probs = []
+            for obs, act in zip(buffer['observations'], buffer['actions']):
+                # 전처리
+                obs_tensor = self.preprocess_observation(obs)  # (1, C, H, W)
+
+                # Log prob 계산
+                logits = self.policy_net(obs_tensor)  # (1, action_dim)
+                probs = F.softmax(logits, dim=-1)  # (1, action_dim)
+                dist = Categorical(probs=probs)
+
+                action_tensor = torch.tensor([act], device=self.device)
+                log_prob = dist.log_prob(action_tensor)  # (1,)
+                log_probs.append(log_prob)
+
+            log_probs = torch.cat(log_probs)  # (T,)
 
             all_log_probs.append(log_probs)
             all_returns.append(returns)
@@ -325,7 +330,7 @@ class SimpleAgent(RLAgent):
             self.episode_rewards.append(sum(buffer['rewards']))
 
             # 버퍼 초기화
-            self.episode_buffers[env_id] = {'log_probs': [], 'rewards': []}
+            self.episode_buffers[env_id] = {'observations': [], 'actions': [], 'rewards': []}
 
         # 최적화 (모든 완료된 에피소드에 대해 한번에)
         if num_episodes > 0:

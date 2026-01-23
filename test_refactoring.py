@@ -105,7 +105,25 @@ def test_refactoring():
     print(f"  [OK] 버퍼 키: {list(agent.episode_buffers.keys())}")
     for env_id in agent.episode_buffers:
         buffer = agent.episode_buffers[env_id]
-        print(f"    - env {env_id}: log_probs={len(buffer['log_probs'])}, rewards={len(buffer['rewards'])}")
+        print(f"    - env {env_id}: observations={len(buffer['observations'])}, actions={len(buffer['actions'])}, rewards={len(buffer['rewards'])}")
+
+    # 7. update 메서드 테스트 (에피소드 완료 시)
+    print("\n[Test 7] update 메서드 (에피소드 완료)")
+
+    # 에피소드를 완료시키기
+    done_true = np.array([True, True])
+    agent.store_transition(test_obs, actions, rewards, next_obs, done_true)
+
+    print(f"  [OK] Completed episodes: {agent.completed_episodes}")
+
+    # Update 호출
+    update_info = agent.update()
+    print(f"  [OK] Update 결과: {update_info}")
+
+    assert 'loss' in update_info, "loss가 반환되지 않았습니다"
+    assert 'num_episodes_updated' in update_info, "num_episodes_updated가 반환되지 않았습니다"
+    print(f"  [OK] Loss: {update_info['loss']:.4f}")
+    print(f"  [OK] Episodes updated: {update_info['num_episodes_updated']}")
 
     print("\n" + "=" * 60)
     print("모든 테스트 통과!")
