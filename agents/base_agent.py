@@ -323,6 +323,7 @@ class RLAgent(BaseAgent):
             path: 저장 경로
         """
         checkpoint = {
+            'agent_type': self.__class__.__name__,  # 에이전트 타입 저장
             'policy_net': self.policy_net.state_dict() if self.policy_net else None,
             'optimizer': self.optimizer.state_dict() if self.optimizer else None,
             'total_steps': self.total_steps,

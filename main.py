@@ -177,6 +177,8 @@ def evaluate(config: dict, checkpoint_path: str) -> None:
         config: 설정 딕셔너리
         checkpoint_path: 체크포인트 경로
     """
+    import torch
+
     print("=" * 60)
     print("SUIKA GAME REINFORCEMENT LEARNING - EVALUATION")
     print("=" * 60)
@@ -189,11 +191,36 @@ def evaluate(config: dict, checkpoint_path: str) -> None:
     video_folder.mkdir(parents=True, exist_ok=True)
     print(f"Videos will be saved to: {video_folder}")
 
+    # 체크포인트에서 agent_type 확인
+    print(f"Loading checkpoint from {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    saved_agent_type = checkpoint.get('agent_type', None)
+
+    if saved_agent_type:
+        # Checkpoint에 저장된 agent type으로 생성
+        print(f"Detected agent type from checkpoint: {saved_agent_type}")
+
+        # Agent type 매핑
+        agent_type_map = {
+            'SimpleAgent': 'simple',
+            'DQNAgent': 'dqn',
+            'RandomAgent': 'random'
+        }
+
+        agent_type_key = agent_type_map.get(saved_agent_type)
+        if agent_type_key:
+            # Config의 agent type을 checkpoint의 것으로 덮어씀
+            config['agent']['type'] = agent_type_key
+            print(f"Using agent type: {agent_type_key}")
+        else:
+            print(f"Warning: Unknown agent type '{saved_agent_type}', using config default")
+    else:
+        print("Warning: No agent_type in checkpoint, using config default")
+
     # 에이전트 생성
     agent = create_agent(env, config)
 
     # 체크포인트 로드
-    print(f"Loading checkpoint from {checkpoint_path}")
     agent.load(checkpoint_path)
 
     # 평가

@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
+from datetime import datetime
 
 from agents.base_agent import BaseAgent
 from envs.suika_wrapper import SuikaEnvWrapper
@@ -170,16 +171,18 @@ class Trainer:
                     # 최고 성능 모델 저장
                     if mean_eval_reward > self.best_mean_reward:
                         self.best_mean_reward = mean_eval_reward
-                        self.save_checkpoint('best_model.pth')
-                        print(f"  New best model saved! (reward: {mean_eval_reward:.2f})")
+                        saved_name = self.save_checkpoint(suffix='best')
+                        print(f"  New best model saved: {saved_name} (reward: {mean_eval_reward:.2f})")
 
                 # 정기 체크포인트 저장
                 if total_steps > 0 and total_steps % self.save_freq == 0:
-                    self.save_checkpoint(f'checkpoint_{total_steps}.pth')
+                    saved_name = self.save_checkpoint(suffix=f'step{total_steps}')
+                    print(f"Checkpoint saved: {saved_name}")
 
         # 학습 종료
         print("\nTraining completed!")
-        self.save_checkpoint('final_model.pth')
+        saved_name = self.save_checkpoint(suffix='final')
+        print(f"Final model saved: {saved_name}")
         self.logger.close()
 
     def evaluate(self, num_episodes: Optional[int] = None) -> Dict[str, float]:
@@ -248,15 +251,45 @@ class Trainer:
 
         return metrics
 
-    def save_checkpoint(self, filename: str) -> None:
+    def _generate_checkpoint_name(self, suffix: str) -> str:
+        """
+        동적으로 체크포인트 이름 생성
+
+        Args:
+            suffix: 'best', 'final', 'step_1000' 등
+
+        Returns:
+            생성된 파일명 (예: 'DQNAgent_1224_1430_best.pth')
+        """
+        # Agent 타입 추출
+        agent_type = self.agent.__class__.__name__
+
+        # 현재 시간 (MMDD_HHMM 형식)
+        now = datetime.now()
+        timestamp = now.strftime("%m%d_%H%M")
+
+        # 파일명 생성: {agent_type}_{MMDD_HHMM}_{suffix}.pth
+        filename = f"{agent_type}_{timestamp}_{suffix}.pth"
+
+        return filename
+
+    def save_checkpoint(self, filename: str = None, suffix: str = None) -> None:
         """
         체크포인트 저장
 
         Args:
-            filename: 저장 파일명
+            filename: 저장 파일명 (None이면 동적 생성)
+            suffix: 동적 생성 시 사용할 suffix ('best', 'final' 등)
         """
+        if filename is None:
+            if suffix is None:
+                suffix = 'checkpoint'
+            filename = self._generate_checkpoint_name(suffix)
+
         path = self.save_path / filename
         self.agent.save(str(path))
+
+        return filename  # 생성된 파일명 반환
 
     def load_checkpoint(self, filename: str) -> None:
         """

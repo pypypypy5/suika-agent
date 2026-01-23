@@ -366,6 +366,51 @@ class DQNAgent(RLAgent):
         q_values = self.policy_net(obs)
         return q_values.argmax(dim=1)
 
+    def save(self, path: str) -> None:
+        """
+        DQN 에이전트 모델 저장 (target network, epsilon 포함)
+
+        Args:
+            path: 저장 경로
+        """
+        checkpoint = {
+            'agent_type': self.__class__.__name__,
+            'policy_net': self.policy_net.state_dict() if self.policy_net else None,
+            'target_net': self.target_net.state_dict() if self.target_net else None,
+            'optimizer': self.optimizer.state_dict() if self.optimizer else None,
+            'epsilon': self.epsilon,
+            'total_steps': self.total_steps,
+            'episodes': self.episodes,
+            'config': self.config
+        }
+        torch.save(checkpoint, path)
+        print(f"DQN Model saved to {path}")
+
+    def load(self, path: str) -> None:
+        """
+        DQN 에이전트 모델 로드
+
+        Args:
+            path: 로드 경로
+        """
+        checkpoint = torch.load(path, map_location=self.device)
+
+        if self.policy_net and checkpoint.get('policy_net'):
+            self.policy_net.load_state_dict(checkpoint['policy_net'])
+
+        if self.target_net and checkpoint.get('target_net'):
+            self.target_net.load_state_dict(checkpoint['target_net'])
+
+        if self.optimizer and checkpoint.get('optimizer'):
+            self.optimizer.load_state_dict(checkpoint['optimizer'])
+
+        # DQN 특화 파라미터
+        self.epsilon = checkpoint.get('epsilon', self.epsilon_min)
+        self.total_steps = checkpoint.get('total_steps', 0)
+        self.episodes = checkpoint.get('episodes', 0)
+
+        print(f"DQN Model loaded from {path}")
+
     def get_statistics(self) -> Dict:
         """
         에이전트 통계 반환
