@@ -18,7 +18,7 @@ env:
 
 # 에이전트 설정
 agent:
-  type: "simple"  # 'simple', 'random', 'dqn', 'ppo', 'sac', 'a2c', etc.
+  type: "dqn"  # 'simple', 'random', 'dqn', 'ppo', 'sac', 'a2c', etc.
 
   # SimpleAgent 전용 설정
   num_discrete_actions: 11  # Box action space를 이산화할 때 행동 개수
@@ -29,13 +29,14 @@ agent:
   learning_rate: 0.0003    # 학습률
   batch_size: 16           # 배치 크기 (기본 64 -> 16)
 
-  # 탐험 설정
+  # 탐험 설정 (DQN용)
   epsilon_start: 1.0       # 초기 epsilon (epsilon-greedy)
-  epsilon_end: 0.01        # 최종 epsilon
+  epsilon_min: 0.1         # 최종 epsilon
   epsilon_decay: 0.995     # epsilon 감소율
 
-  # 메모리 버퍼
-  buffer_size: 5000        # 리플레이 버퍼 크기 (기본 100000 -> 5000)
+  # 메모리 버퍼 (DQN용)
+  buffer_capacity: 5000    # 리플레이 버퍼 크기 (기본 100000 -> 5000)
+  target_update_freq: 100  # 타겟 네트워크 업데이트 빈도 (기본 1000 -> 100)
 
   # 신경망 아키텍처
   network:
@@ -47,8 +48,7 @@ agent:
 # 학습 설정
 training:
   total_timesteps: 1000      # 총 학습 스텝 (기본 1000000 -> 1000)
-  train_freq: 4              # 학습 빈도 (스텝)
-  target_update_freq: 100    # 타겟 네트워크 업데이트 빈도 (기본 1000 -> 100)
+  update_frequency: 1        # 학습 빈도 (스텝, trainer.py에서 사용)
   gradient_steps: 1          # 각 업데이트당 그래디언트 스텝
 
   # 평가

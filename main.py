@@ -11,7 +11,7 @@ import numpy as np
 import imageio
 
 from envs import SuikaEnvWrapper
-from agents import RandomAgent, SimpleAgent
+from agents import RandomAgent, SimpleAgent, DQNAgent
 from utils import setup_logger
 from training import Trainer
 
@@ -116,9 +116,17 @@ def create_agent(env, config: dict):
             config=agent_config
         )
         print("Using Simple Policy Gradient Agent")
+    elif agent_type == 'dqn':
+        # DQN 에이전트
+        agent = DQNAgent(
+            observation_space=obs_space,
+            action_space=act_space,
+            config=agent_config
+        )
+        print("Using DQN Agent")
     else:
         # 여기에 다른 에이전트 타입 추가
-        # 예: DQN, PPO, SAC 등
+        # 예: PPO, SAC 등
         raise NotImplementedError(
             f"Agent type '{agent_type}' not implemented yet. "
             f"Please implement your agent in agents/ directory and add it here."

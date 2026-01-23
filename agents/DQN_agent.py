@@ -350,6 +350,22 @@ class DQNAgent(RLAgent):
             'q_mean': current_q.mean().item()
         }
 
+    def _forward_policy(self, obs: torch.Tensor, deterministic: bool) -> torch.Tensor:
+        """
+        정책 네트워크 forward pass (DQN은 select_action에서 직접 처리)
+
+        Args:
+            obs: 전처리된 관찰 텐서
+            deterministic: 결정적 정책 사용 여부
+
+        Returns:
+            행동 텐서
+        """
+        # DQN은 epsilon-greedy를 select_action에서 처리하므로
+        # 여기서는 greedy action만 반환
+        q_values = self.policy_net(obs)
+        return q_values.argmax(dim=1)
+
     def get_statistics(self) -> Dict:
         """
         에이전트 통계 반환
