@@ -98,7 +98,8 @@ class SuikaEnvWrapper(gym.Wrapper):
                     headless=headless,
                     port=port,
                     delay_before_img_capture=delay_before_img_capture,
-                    fast_mode=fast_mode
+                    fast_mode=fast_mode,
+                    server_restart_callback=self._restart_server if self._auto_start_server else None
                 )
                 mode_str = "HTTP mode (fast, stable)"
                 print(f"Using real Suika environment (port={port}, {mode_str})")
@@ -163,48 +164,51 @@ class SuikaEnvWrapper(gym.Wrapper):
             observation: 초기 관찰
             info: 추가 정보 딕셔너리
         """
-        max_restart_attempts = 2
-        for attempt in range(max_restart_attempts + 1):
-            try:
-                obs, info = self.env.reset(seed=seed, options=options)
-                break
-            except Exception as e:
-                print(f"Warning: env.reset failed (attempt {attempt + 1}/{max_restart_attempts + 1}): {e}")
+        try:
+            obs, info = self.env.reset(seed=seed, options=options)
 
-                if attempt < max_restart_attempts:
-                    # Check if server is dead and restart
-                    if not self._is_server_healthy(self._server_port):
-                        print(f"Server health check failed. Attempting restart...")
-                        try:
-                            self._restart_server(self._server_port)
-                            time.sleep(2.0)  # Wait for server to stabilize
-                        except Exception as restart_error:
-                            print(f"Server restart failed: {restart_error}")
-                    else:
-                        # Server is healthy but request failed, just retry
-                        time.sleep(1.0)
-                else:
-                    # Final attempt failed, re-raise
-                    raise
+            # 에피소드 통계 초기화
+            self.episode_score = 0
+            self.episode_steps = 0
 
-        # 에피소드 통계 초기화
-        self.episode_score = 0
-        self.episode_steps = 0
+            # Reward 함수 상태 초기화
+            self.reward_fn.reset()
 
-        # Reward 함수 상태 초기화
-        self.reward_fn.reset()
+            # 관찰 전처리
+            processed_obs = self._process_observation(obs)
 
-        # 관찰 전처리
-        processed_obs = self._process_observation(obs)
+            # 추가 정보
+            info.update({
+                'episode_score': self.episode_score,
+                'episode_steps': self.episode_steps,
+                'best_score': self.best_score
+            })
 
-        # 추가 정보
-        info.update({
-            'episode_score': self.episode_score,
-            'episode_steps': self.episode_steps,
-            'best_score': self.best_score
-        })
+            return processed_obs, info
 
-        return processed_obs, info
+        except Exception as e:
+            # 서버 에러 시 worker 크래시 방지
+            print(f"[Wrapper] Error during reset: {e}")
+            print(f"[Wrapper] Returning dummy observation to prevent worker crash")
+
+            # 에피소드 통계 초기화
+            self.episode_score = 0
+            self.episode_steps = 0
+
+            # Reward 함수 상태 초기화
+            self.reward_fn.reset()
+
+            # 더미 observation 생성
+            dummy_obs = self.observation_space.sample()
+            processed_obs = self._process_observation(dummy_obs)
+
+            return processed_obs, {
+                'episode_score': self.episode_score,
+                'episode_steps': self.episode_steps,
+                'best_score': self.best_score,
+                'error': str(e),
+                'forced_reset': True
+            }
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """
@@ -220,77 +224,53 @@ class SuikaEnvWrapper(gym.Wrapper):
             truncated: 시간 제한 등으로 인한 조기 종료
             info: 추가 정보
         """
-        # 행동 실행
-        max_restart_attempts = 2
-        for attempt in range(max_restart_attempts + 1):
-            try:
-                obs, reward, terminated, truncated, info = self.env.step(action)
-                break
-            except Exception as e:
-                print(f"Warning: env.step failed (attempt {attempt + 1}/{max_restart_attempts + 1}): {e}")
+        try:
+            # 행동 실행
+            obs, reward, terminated, truncated, info = self.env.step(action)
 
-                if attempt < max_restart_attempts:
-                    # Check if server is dead and restart
-                    if not self._is_server_healthy(self._server_port):
-                        print(f"Server health check failed. Attempting restart...")
-                        try:
-                            self._restart_server(self._server_port)
-                            time.sleep(2.0)  # Wait for server to stabilize
-                            # After restart, reset the environment
-                            obs, info = self.env.reset()
-                            reward = 0.0
-                            terminated = True
-                            truncated = False
-                            info = info or {}
-                            info['error'] = str(e)
-                            info['server_restarted'] = True
-                            break
-                        except Exception as restart_error:
-                            print(f"Server restart failed: {restart_error}")
-                    else:
-                        # Server is healthy but request failed, just retry
-                        time.sleep(1.0)
-                else:
-                    # Final attempt failed, reset and mark as done
-                    print(f"All restart attempts failed. Resetting environment.")
-                    try:
-                        obs, info = self.env.reset()
-                    except:
-                        # Even reset failed, return dummy observation
-                        obs = self.env.observation_space.sample()
-                        info = {}
-                    reward = 0.0
-                    terminated = True
-                    truncated = False
-                    info['error'] = str(e)
-                    info['restart_failed'] = True
+            # 에피소드 통계 업데이트
+            self.episode_steps += 1
+            self.episode_score += reward
 
-        # 에피소드 통계 업데이트
-        self.episode_steps += 1
-        self.episode_score += reward
+            # 관찰 전처리 (reward 함수에서 사용하기 위해 먼저 처리)
+            processed_obs = self._process_observation(obs)
+            self._current_obs = processed_obs  # reward 함수에서 사용 가능하도록 저장
 
-        # 관찰 전처리 (reward 함수에서 사용하기 위해 먼저 처리)
-        processed_obs = self._process_observation(obs)
-        self._current_obs = processed_obs  # reward 함수에서 사용 가능하도록 저장
+            # 보상 처리
+            processed_reward = self._process_reward(reward, info)
 
-        # 보상 처리
-        processed_reward = self._process_reward(reward, info)
+            # 추가 정보 업데이트
+            info.update({
+                'episode_score': self.episode_score,
+                'episode_steps': self.episode_steps,
+                'original_reward': reward,
+                'processed_reward': processed_reward
+            })
 
-        # 추가 정보 업데이트
-        info.update({
-            'episode_score': self.episode_score,
-            'episode_steps': self.episode_steps,
-            'original_reward': reward,
-            'processed_reward': processed_reward
-        })
+            # 에피소드 종료 시 최고 점수 업데이트
+            if terminated or truncated:
+                if self.episode_score > self.best_score:
+                    self.best_score = self.episode_score
+                info['best_score'] = self.best_score
 
-        # 에피소드 종료 시 최고 점수 업데이트
-        if terminated or truncated:
-            if self.episode_score > self.best_score:
-                self.best_score = self.episode_score
-            info['best_score'] = self.best_score
+            return processed_obs, processed_reward, terminated, truncated, info
 
-        return processed_obs, processed_reward, terminated, truncated, info
+        except Exception as e:
+            # 서버 에러 시 worker 크래시 방지
+            print(f"[Wrapper] Error during step: {e}")
+            print(f"[Wrapper] Forcing episode termination to prevent worker crash")
+
+            # 더미 observation 생성
+            dummy_obs = self.observation_space.sample()
+            processed_obs = self._process_observation(dummy_obs)
+
+            # 에피소드 강제 종료
+            return processed_obs, 0.0, True, False, {
+                'episode_score': self.episode_score,
+                'episode_steps': self.episode_steps,
+                'error': str(e),
+                'forced_termination': True
+            }
 
     def _process_observation(self, obs: Any) -> Dict[str, Any]:
         """
@@ -476,21 +456,33 @@ class SuikaEnvWrapper(gym.Wrapper):
         """Restart the server (kill existing one and start new one)."""
         print(f"[Port {port}] Restarting server...")
 
-        # Kill existing process
-        self._kill_server()
-        self._server_started_by_wrapper = False
+        try:
+            # Kill existing process
+            self._kill_server()
+            self._server_started_by_wrapper = False
 
-        # Wait a bit for port to be released
-        time.sleep(1.0)
+            # Wait longer for port to be released
+            time.sleep(2.0)
 
-        # Start new server
-        self._start_server_if_needed(port, timeout)
+            # Kill any remaining process on the port
+            self._kill_existing_server_on_port(port)
+            time.sleep(1.0)
 
-        # Verify it's running
-        if self._is_server_healthy(port):
-            print(f"[Port {port}] Server restarted successfully")
-        else:
-            print(f"[Port {port}] Warning: Server may not be healthy after restart")
+            # Start new server
+            self._start_server_if_needed(port, timeout)
+
+            # Verify it's running
+            if self._is_server_healthy(port):
+                print(f"[Port {port}] Server restarted successfully")
+            else:
+                print(f"[Port {port}] Warning: Server may not be healthy after restart")
+                # Try one more time
+                time.sleep(2.0)
+                if not self._is_server_healthy(port):
+                    raise RuntimeError(f"Server on port {port} failed to restart")
+        except Exception as e:
+            print(f"[Port {port}] ERROR during server restart: {e}")
+            raise
 
     def _start_server_if_needed(self, port: int, timeout: float) -> None:
         """Start the Node.js server if it's not already running."""

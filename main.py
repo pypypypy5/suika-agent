@@ -70,9 +70,9 @@ def create_env(config: dict, num_envs: int = None):
         num_envs: 환경 개수 (None이면 config.system.num_workers 사용)
 
     Returns:
-        VectorEnv (SyncVectorEnv 또는 AsyncVectorEnv)
+        VectorEnv (SyncVectorEnv 또는 ResilientAsyncVectorEnv)
     """
-    from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
+    from envs import make_resilient_vector_env
 
     env_config = config.get('env', {})
     system_config = config.get('system', {})
@@ -100,14 +100,18 @@ def create_env(config: dict, num_envs: int = None):
 
     envs = [make_env(i) for i in range(num_envs)]
 
-    # num_envs=1이면 SyncVectorEnv (오버헤드 최소)
-    # num_envs>1이면 AsyncVectorEnv (병렬 처리)
+    # Use resilient vector env that auto-restarts dead workers
+    max_worker_restarts = system_config.get('max_worker_restarts', 3)
+    vec_env = make_resilient_vector_env(
+        envs,
+        num_envs=num_envs,
+        max_worker_restarts=max_worker_restarts
+    )
+
     if num_envs == 1:
-        vec_env = SyncVectorEnv(envs)
         print(f"Created SyncVectorEnv with {num_envs} environment")
     else:
-        vec_env = AsyncVectorEnv(envs)
-        print(f"Created AsyncVectorEnv with {num_envs} environments")
+        print(f"Created ResilientAsyncVectorEnv with {num_envs} environments (auto-restart enabled)")
 
     print(f"Observation space: {vec_env.single_observation_space}")
     print(f"Action space: {vec_env.single_action_space}")

@@ -29,7 +29,8 @@ class SuikaBrowserEnv(gymnasium.Env):
         fast_mode: bool = True,
         server_url: Optional[str] = None,
         timeout: float = 30.0,
-        max_retries: int = 3
+        max_retries: int = 3,
+        server_restart_callback: Optional[callable] = None
     ) -> None:
         """
         Initialize the HTTP-based Suika Game environment.
@@ -42,6 +43,7 @@ class SuikaBrowserEnv(gymnasium.Env):
             server_url: Full server URL (overrides port if provided)
             timeout: Request timeout in seconds
             max_retries: Maximum number of retries for failed requests
+            server_restart_callback: Optional callback to restart server on failure
         """
         # Server configuration
         if server_url:
@@ -52,6 +54,8 @@ class SuikaBrowserEnv(gymnasium.Env):
         self.api_base = f"{self.server_url}/api"
         self.timeout = timeout
         self.max_retries = max_retries
+        self.server_restart_callback = server_restart_callback
+        self.port = port
 
         # Generate unique game ID for this environment instance
         self.game_id = f"game_{id(self)}"
@@ -137,10 +141,26 @@ class SuikaBrowserEnv(gymnasium.Env):
 
         except requests.exceptions.RequestException as e:
             if retry_count < self.max_retries:
-                print(f"Request failed (attempt {retry_count + 1}/{self.max_retries}): {e}")
+                print(f"[Port {self.port}] Request failed (attempt {retry_count + 1}/{self.max_retries}): {e}")
                 time.sleep(0.5 * (retry_count + 1))  # Exponential backoff
                 return self._make_request(method, endpoint, data, retry_count + 1)
             else:
+                # All retries failed - try server restart if callback provided
+                if self.server_restart_callback:
+                    print(f"[Port {self.port}] All retries failed. Attempting server restart via callback...")
+                    try:
+                        self.server_restart_callback(self.port)
+                        time.sleep(3.0)  # Wait longer for server to come up and stabilize
+                        # Try one more time after restart (with retry_count=0 to allow full retry chain)
+                        print(f"[Port {self.port}] Retrying request after server restart...")
+                        return self._make_request(method, endpoint, data, retry_count=0)
+                    except Exception as restart_error:
+                        print(f"[Port {self.port}] Server restart failed: {restart_error}")
+                        # Don't crash worker, return a safe fallback instead
+                        print(f"[Port {self.port}] WARNING: Returning dummy observation to prevent worker crash")
+                        # This will be caught by the caller
+                        raise
+
                 raise RuntimeError(f"Request failed after {self.max_retries} retries: {e}")
 
     def _parse_observation(self, obs_data: Dict[str, Any]) -> Tuple[Dict[str, np.ndarray], bool]:

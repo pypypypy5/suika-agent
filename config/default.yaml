@@ -58,7 +58,7 @@ training:
   eval_episodes: 10         # 평가 에피소드 수
 
   # 체크포인트
-  save_freq: 50000          # 모델 저장 빈도
+  save_freq: 5000           # 모델 저장 빈도 (자주 저장하여 크래시 시 복구 가능)
   save_path: "experiments/checkpoints"
 
   # 조기 종료
@@ -79,5 +79,6 @@ logging:
 # 시스템 설정
 system:
   device: "auto"            # 'cuda', 'cpu', 'auto'
-  num_workers: 4            # 병렬 환경 수 (Windows에서 안정성 위해 1 권장)
+  num_workers: 2            # 병렬 환경 수 (Windows에서 안정성 위해 1-2 권장, 4는 불안정)
+  max_worker_restarts: 5    # Worker 프로세스 자동 재시작 최대 횟수
   seed: 42                  # 랜덤 시드
