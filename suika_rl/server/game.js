@@ -372,7 +372,7 @@ class SuikaGame {
     const imageData = this._render();
 
     return {
-      image: Array.from(imageData),  // RGBA array [128x128x4]
+      image: Array.from(imageData),  // RGBA array [260x384x4] = 399360
       score: this.score,
       done: this.stateIndex === GameStates.LOSE,
       stateIndex: this.stateIndex

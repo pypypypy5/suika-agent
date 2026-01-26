@@ -9,11 +9,41 @@ import yaml
 from pathlib import Path
 import numpy as np
 import imageio
+import subprocess
+import atexit
+import requests
+import time
+import sys
 
 from envs import SuikaEnvWrapper
 from agents import RandomAgent, SimpleAgent, DQNAgent
 from utils import setup_logger
 from training import Trainer
+
+_server_process = None
+
+
+def start_server_if_needed(port: int = 8924):
+    """서버가 없으면 시작"""
+    global _server_process
+    try:
+        requests.get(f"http://localhost:{port}/health", timeout=1)
+        return  # 이미 실행 중
+    except:
+        pass
+
+    server_dir = Path(__file__).parent / "suika_rl" / "server"
+    cmd = ["npm.cmd" if sys.platform == "win32" else "npm", "start"]
+    _server_process = subprocess.Popen(cmd, cwd=server_dir,
+                                       stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+    time.sleep(3)  # 서버 시작 대기
+
+
+def cleanup_server():
+    """서버 종료"""
+    if _server_process:
+        _server_process.terminate()
 
 
 def load_config(config_path: str) -> dict:
@@ -353,6 +383,11 @@ def main():
 
     config = load_config(str(config_path))
     print(f"Loaded config from {config_path}")
+
+    # 게임 서버 시작
+    port = config.get('env', {}).get('port', 8924)
+    start_server_if_needed(port)
+    atexit.register(cleanup_server)
 
     # 모드에 따라 실행
     if args.mode == 'train':
