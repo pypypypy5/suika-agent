@@ -77,6 +77,8 @@ class SuikaEnvWrapper(gym.Wrapper):
         self._server_started_by_wrapper = False
         self._server_port = port
         self._auto_start_server = auto_start_server
+        self._server_log_out = None
+        self._server_log_err = None
 
         # Mock 환경 또는 실제 환경 선택
         if use_mock:
@@ -376,17 +378,31 @@ class SuikaEnvWrapper(gym.Wrapper):
             return
 
         server_dir = Path(__file__).resolve().parent.parent / "suika_rl" / "server"
+
+        # Create logs directory
+        log_dir = Path(__file__).resolve().parent.parent / "logs"
+        log_dir.mkdir(exist_ok=True)
+
+        # Open log files for stdout and stderr
+        log_file_out = log_dir / f"server_port{port}_stdout.log"
+        log_file_err = log_dir / f"server_port{port}_stderr.log"
+
+        self._server_log_out = open(log_file_out, 'w', encoding='utf-8')
+        self._server_log_err = open(log_file_err, 'w', encoding='utf-8')
+
         cmd = ["npm.cmd" if sys.platform == "win32" else "npm", "start"]
         env = os.environ.copy()
         env["PORT"] = str(port)
         self._server_process = subprocess.Popen(
             cmd,
             cwd=server_dir,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=self._server_log_out,
+            stderr=self._server_log_err,
             env=env
         )
         self._server_started_by_wrapper = True
+        print(f"Server logs: {log_file_out} and {log_file_err}")
+
         # Wait for port to become available (basic readiness check)
         deadline = time.time() + max(0.0, timeout)
         while time.time() < deadline:
@@ -414,6 +430,14 @@ class SuikaEnvWrapper(gym.Wrapper):
             self._server_process.terminate()
             self._server_process = None
             self._server_started_by_wrapper = False
+
+        # Close log file handles
+        if self._server_log_out is not None:
+            self._server_log_out.close()
+            self._server_log_out = None
+        if self._server_log_err is not None:
+            self._server_log_err.close()
+            self._server_log_err = None
 
 
 def make_suika_env(
