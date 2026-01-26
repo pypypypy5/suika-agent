@@ -134,6 +134,20 @@ python main.py --mode train --config config/default.yaml
 - TensorBoard: `tensorboard --logdir experiments/tensorboard`
 - 체크포인트: `experiments/checkpoints/`
 
+### 이전 체크포인트에서 이어서 학습
+
+```bash
+python main.py --mode train --config config/default.yaml --resume experiments/checkpoints/DQNAgent_0126_2038_best.pth
+```
+
+이어서 학습하면:
+- 모델 가중치 (policy_net, target_net)
+- 옵티마이저 상태
+- 학습 통계 (total_steps, episodes)
+- DQN epsilon 값
+
+모두 이전 상태에서 계속됩니다.
+
 ## 5. 모델 평가
 
 ```bash

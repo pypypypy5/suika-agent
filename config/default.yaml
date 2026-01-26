@@ -7,6 +7,7 @@ env:
   port: 8924                  # Node.js 게임 서버 포트 (모든 워커가 공유)
   port_base: 8924
   auto_start_server_per_env: true
+  force_server_restart: true  # 기존 서버 강제 종료 후 재시작 (로그 캡처 보장)
   delay_before_img_capture: 0.5  # 이미지 캡처 전 대기 시간 (HTTP mode에서는 무시됨)
 
   # 래퍼 설정

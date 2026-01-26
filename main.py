@@ -93,7 +93,8 @@ def create_env(config: dict, num_envs: int = None):
                 normalize_obs=env_config.get('normalize_obs', True),
                 use_mock=env_config.get('use_mock', False),
                 fast_mode=env_config.get('fast_mode', True),
-                auto_start_server=auto_start_per_env
+                auto_start_server=auto_start_per_env,
+                force_server_restart=env_config.get('force_server_restart', False)
             )
         return _init
 
@@ -178,13 +179,14 @@ def create_agent(env, config: dict):
     return agent
 
 
-def train(config: dict, experiment_name: str = None) -> None:
+def train(config: dict, experiment_name: str = None, resume_checkpoint: str = None) -> None:
     """
     학습 실행
 
     Args:
         config: 설정 딕셔너리
         experiment_name: 실험 이름
+        resume_checkpoint: 이어서 학습할 체크포인트 경로
     """
     print("=" * 60)
     print("SUIKA GAME REINFORCEMENT LEARNING - TRAINING")
@@ -195,6 +197,12 @@ def train(config: dict, experiment_name: str = None) -> None:
 
     # 에이전트 생성
     agent = create_agent(env, config)
+
+    # 체크포인트에서 이어서 학습
+    if resume_checkpoint:
+        print(f"\nResuming training from checkpoint: {resume_checkpoint}")
+        agent.load(resume_checkpoint)
+        print(f"Loaded model - Steps: {agent.total_steps}, Episodes: {agent.episodes}")
 
     # 로거 설정
     logger = setup_logger(config, experiment_name)
@@ -376,6 +384,12 @@ def main():
         default=None,
         help='실험 이름 (학습 모드)'
     )
+    parser.add_argument(
+        '--resume',
+        type=str,
+        default=None,
+        help='체크포인트 경로 (학습을 이어서 진행)'
+    )
 
     args = parser.parse_args()
 
@@ -395,7 +409,7 @@ def main():
 
     # 모드에 따라 실행
     if args.mode == 'train':
-        train(config, args.experiment_name)
+        train(config, args.experiment_name, args.resume)
     elif args.mode == 'eval':
         if args.checkpoint is None:
             raise ValueError("--checkpoint is required for evaluation mode")

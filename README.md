@@ -92,6 +92,11 @@ python tests/test_simple.py
 python main.py --mode train --config config/default.yaml
 ```
 
+### 이전 모델에서 이어서 학습
+```bash
+python main.py --mode train --config config/default.yaml --resume experiments/checkpoints/DQNAgent_0126_2038_best.pth
+```
+
 ### 학습된 모델 평가
 ```bash
 python main.py --mode eval --checkpoint experiments/checkpoints/best_model.pth

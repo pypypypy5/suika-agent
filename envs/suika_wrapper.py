@@ -53,6 +53,7 @@ class SuikaEnvWrapper(gym.Wrapper):
         fast_mode: bool = True,
         auto_start_server: bool = True,
         server_start_timeout: float = 3.0,
+        force_server_restart: bool = False,
         **kwargs
     ):
         """
@@ -71,12 +72,15 @@ class SuikaEnvWrapper(gym.Wrapper):
             use_mock: True면 실제 환경 대신 Mock 환경 사용 (개발/테스트용)
             fast_mode: True면 고속 모드 활성화 (물리 시뮬레이션만 빠르게, 렌더링 비활성화)
                       학습 시 권장, 시각화 필요 시 False로 설정
+            auto_start_server: True면 서버가 없을 때 자동 시작
+            force_server_restart: True면 기존 서버를 강제로 죽이고 새로 시작 (로그 캡처 보장)
             **kwargs: 환경 생성에 전달할 추가 인자
         """
         self._server_process = None
         self._server_started_by_wrapper = False
         self._server_port = port
         self._auto_start_server = auto_start_server
+        self._force_server_restart = force_server_restart
         self._server_log_out = None
         self._server_log_err = None
 
@@ -159,12 +163,29 @@ class SuikaEnvWrapper(gym.Wrapper):
             observation: 초기 관찰
             info: 추가 정보 딕셔너리
         """
-        try:
-            obs, info = self.env.reset(seed=seed, options=options)
-        except Exception as e:
-            # Attempt a single retry to keep worker alive
-            print(f"Warning: env.reset failed: {e}")
-            obs, info = self.env.reset(seed=seed, options=options)
+        max_restart_attempts = 2
+        for attempt in range(max_restart_attempts + 1):
+            try:
+                obs, info = self.env.reset(seed=seed, options=options)
+                break
+            except Exception as e:
+                print(f"Warning: env.reset failed (attempt {attempt + 1}/{max_restart_attempts + 1}): {e}")
+
+                if attempt < max_restart_attempts:
+                    # Check if server is dead and restart
+                    if not self._is_server_healthy(self._server_port):
+                        print(f"Server health check failed. Attempting restart...")
+                        try:
+                            self._restart_server(self._server_port)
+                            time.sleep(2.0)  # Wait for server to stabilize
+                        except Exception as restart_error:
+                            print(f"Server restart failed: {restart_error}")
+                    else:
+                        # Server is healthy but request failed, just retry
+                        time.sleep(1.0)
+                else:
+                    # Final attempt failed, re-raise
+                    raise
 
         # 에피소드 통계 초기화
         self.episode_score = 0
@@ -200,17 +221,49 @@ class SuikaEnvWrapper(gym.Wrapper):
             info: 추가 정보
         """
         # 행동 실행
-        try:
-            obs, reward, terminated, truncated, info = self.env.step(action)
-        except Exception as e:
-            # Keep AsyncVectorEnv workers alive on transient failures
-            print(f"Warning: env.step failed: {e}")
-            obs, info = self.env.reset()
-            reward = 0.0
-            terminated = True
-            truncated = False
-            info = info or {}
-            info['error'] = str(e)
+        max_restart_attempts = 2
+        for attempt in range(max_restart_attempts + 1):
+            try:
+                obs, reward, terminated, truncated, info = self.env.step(action)
+                break
+            except Exception as e:
+                print(f"Warning: env.step failed (attempt {attempt + 1}/{max_restart_attempts + 1}): {e}")
+
+                if attempt < max_restart_attempts:
+                    # Check if server is dead and restart
+                    if not self._is_server_healthy(self._server_port):
+                        print(f"Server health check failed. Attempting restart...")
+                        try:
+                            self._restart_server(self._server_port)
+                            time.sleep(2.0)  # Wait for server to stabilize
+                            # After restart, reset the environment
+                            obs, info = self.env.reset()
+                            reward = 0.0
+                            terminated = True
+                            truncated = False
+                            info = info or {}
+                            info['error'] = str(e)
+                            info['server_restarted'] = True
+                            break
+                        except Exception as restart_error:
+                            print(f"Server restart failed: {restart_error}")
+                    else:
+                        # Server is healthy but request failed, just retry
+                        time.sleep(1.0)
+                else:
+                    # Final attempt failed, reset and mark as done
+                    print(f"All restart attempts failed. Resetting environment.")
+                    try:
+                        obs, info = self.env.reset()
+                    except:
+                        # Even reset failed, return dummy observation
+                        obs = self.env.observation_space.sample()
+                        info = {}
+                    reward = 0.0
+                    terminated = True
+                    truncated = False
+                    info['error'] = str(e)
+                    info['restart_failed'] = True
 
         # 에피소드 통계 업데이트
         self.episode_steps += 1
@@ -372,10 +425,83 @@ class SuikaEnvWrapper(gym.Wrapper):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             return sock.connect_ex(('localhost', port)) == 0
 
+    def _is_server_healthy(self, port: int) -> bool:
+        """Check if the server is responding to health checks."""
+        import requests
+        try:
+            response = requests.get(f"http://localhost:{port}/health", timeout=2.0)
+            return response.status_code == 200
+        except:
+            return False
+
+    def _kill_server(self) -> None:
+        """Kill the server process if it was started by this wrapper."""
+        if self._server_process is not None:
+            try:
+                self._server_process.terminate()
+                self._server_process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                self._server_process.kill()
+                self._server_process.wait()
+            self._server_process = None
+
+        # Close log file handles
+        if self._server_log_out is not None:
+            self._server_log_out.close()
+            self._server_log_out = None
+        if self._server_log_err is not None:
+            self._server_log_err.close()
+            self._server_log_err = None
+
+    def _kill_existing_server_on_port(self, port: int) -> None:
+        """Kill any process listening on the given port (Windows compatible)."""
+        import psutil
+        try:
+            for conn in psutil.net_connections():
+                if conn.laddr.port == port and conn.status == 'LISTEN':
+                    try:
+                        process = psutil.Process(conn.pid)
+                        print(f"   Killing process {conn.pid} ({process.name()}) on port {port}")
+                        process.terminate()
+                        process.wait(timeout=3.0)
+                    except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+                        try:
+                            process.kill()
+                        except:
+                            pass
+        except Exception as e:
+            print(f"   Warning: Could not kill process on port {port}: {e}")
+
+    def _restart_server(self, port: int, timeout: float = 10.0) -> None:
+        """Restart the server (kill existing one and start new one)."""
+        print(f"[Port {port}] Restarting server...")
+
+        # Kill existing process
+        self._kill_server()
+        self._server_started_by_wrapper = False
+
+        # Wait a bit for port to be released
+        time.sleep(1.0)
+
+        # Start new server
+        self._start_server_if_needed(port, timeout)
+
+        # Verify it's running
+        if self._is_server_healthy(port):
+            print(f"[Port {port}] Server restarted successfully")
+        else:
+            print(f"[Port {port}] Warning: Server may not be healthy after restart")
+
     def _start_server_if_needed(self, port: int, timeout: float) -> None:
         """Start the Node.js server if it's not already running."""
         if self._is_port_in_use(port):
-            return
+            if self._force_server_restart:
+                print(f"[Port {port}] Server already running, killing for restart (force_server_restart=True)")
+                self._kill_existing_server_on_port(port)
+                time.sleep(1.0)
+            else:
+                print(f"[Port {port}] Server already running")
+                return
 
         server_dir = Path(__file__).resolve().parent.parent / "suika_rl" / "server"
 
@@ -383,12 +509,21 @@ class SuikaEnvWrapper(gym.Wrapper):
         log_dir = Path(__file__).resolve().parent.parent / "logs"
         log_dir.mkdir(exist_ok=True)
 
-        # Open log files for stdout and stderr
+        # Open log files for stdout and stderr (append mode to keep history)
         log_file_out = log_dir / f"server_port{port}_stdout.log"
         log_file_err = log_dir / f"server_port{port}_stderr.log"
 
-        self._server_log_out = open(log_file_out, 'w', encoding='utf-8')
-        self._server_log_err = open(log_file_err, 'w', encoding='utf-8')
+        self._server_log_out = open(log_file_out, 'a', encoding='utf-8', buffering=1)
+        self._server_log_err = open(log_file_err, 'a', encoding='utf-8', buffering=1)
+
+        # Write separator with timestamp
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        separator = f"\n{'='*60}\n[{timestamp}] Starting server on port {port}\n{'='*60}\n"
+        self._server_log_out.write(separator)
+        self._server_log_err.write(separator)
+        self._server_log_out.flush()
+        self._server_log_err.flush()
 
         cmd = ["npm.cmd" if sys.platform == "win32" else "npm", "start"]
         env = os.environ.copy()
@@ -401,14 +536,17 @@ class SuikaEnvWrapper(gym.Wrapper):
             env=env
         )
         self._server_started_by_wrapper = True
-        print(f"Server logs: {log_file_out} and {log_file_err}")
+        print(f"[Port {port}] Server started. Logs: {log_file_out}")
 
         # Wait for port to become available (basic readiness check)
         deadline = time.time() + max(0.0, timeout)
         while time.time() < deadline:
             if self._is_port_in_use(port):
+                print(f"[Port {port}] Server ready")
                 break
             time.sleep(0.1)
+        else:
+            print(f"[Port {port}] Warning: Server did not become ready within {timeout}s")
 
     def get_episode_statistics(self) -> Dict[str, float]:
         """
@@ -426,18 +564,9 @@ class SuikaEnvWrapper(gym.Wrapper):
 
     def close(self):
         super().close()
-        if self._server_started_by_wrapper and self._server_process is not None:
-            self._server_process.terminate()
-            self._server_process = None
+        if self._server_started_by_wrapper:
+            self._kill_server()
             self._server_started_by_wrapper = False
-
-        # Close log file handles
-        if self._server_log_out is not None:
-            self._server_log_out.close()
-            self._server_log_out = None
-        if self._server_log_err is not None:
-            self._server_log_err.close()
-            self._server_log_err = None
 
 
 def make_suika_env(
