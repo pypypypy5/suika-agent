@@ -24,11 +24,11 @@ _server_process = None
 
 
 def start_server_if_needed(port: int = 8924):
-    """서버가 없으면 시작"""
+    """??? ??? ??"""
     global _server_process
     try:
         requests.get(f"http://localhost:{port}/health", timeout=1)
-        return  # 이미 실행 중
+        return  # ?? ?? ?
     except:
         pass
 
@@ -37,7 +37,7 @@ def start_server_if_needed(port: int = 8924):
     _server_process = subprocess.Popen(cmd, cwd=server_dir,
                                        stdout=subprocess.DEVNULL,
                                        stderr=subprocess.DEVNULL)
-    time.sleep(3)  # 서버 시작 대기
+    time.sleep(3)  # ?? ?? ??
 
 
 def cleanup_server():
@@ -76,6 +76,8 @@ def create_env(config: dict, num_envs: int = None):
 
     env_config = config.get('env', {})
     system_config = config.get('system', {})
+    auto_start_per_env = env_config.get('auto_start_server_per_env', True)
+    base_port = env_config.get('port_base', env_config.get('port', 8924))
 
     if num_envs is None:
         num_envs = system_config.get('num_workers', 1)
@@ -84,13 +86,14 @@ def create_env(config: dict, num_envs: int = None):
         def _init():
             return SuikaEnvWrapper(
                 headless=env_config.get('headless', True),
-                port=env_config.get('port', 8924),  # 모든 워커가 같은 포트 공유 (HTTP mode)
+                port=(base_port + rank) if auto_start_per_env else env_config.get('port', base_port),
                 delay_before_img_capture=env_config.get('delay_before_img_capture', 0.5),
                 observation_type=env_config.get('observation_type', 'image'),
                 reward_scale=env_config.get('reward_scale', 1.0),
                 normalize_obs=env_config.get('normalize_obs', True),
                 use_mock=env_config.get('use_mock', False),
-                fast_mode=env_config.get('fast_mode', True)
+                fast_mode=env_config.get('fast_mode', True),
+                auto_start_server=auto_start_per_env
             )
         return _init
 
@@ -384,10 +387,11 @@ def main():
     config = load_config(str(config_path))
     print(f"Loaded config from {config_path}")
 
-    # 게임 서버 시작
-    port = config.get('env', {}).get('port', 8924)
-    start_server_if_needed(port)
-    atexit.register(cleanup_server)
+    # ?? ?? ?? (?? ?? ?????)
+    if not config.get('env', {}).get('auto_start_server_per_env', True):
+        port = config.get('env', {}).get('port', 8924)
+        start_server_if_needed(port)
+        atexit.register(cleanup_server)
 
     # 모드에 따라 실행
     if args.mode == 'train':

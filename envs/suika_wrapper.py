@@ -8,6 +8,10 @@ Suika Game 환경 래퍼
 import sys
 import os
 import numpy as np
+import socket
+import subprocess
+import time
+from pathlib import Path
 import gymnasium as gym
 from typing import Tuple, Dict, Any, Optional
 
@@ -47,6 +51,8 @@ class SuikaEnvWrapper(gym.Wrapper):
         normalize_obs: bool = True,
         use_mock: bool = False,
         fast_mode: bool = True,
+        auto_start_server: bool = True,
+        server_start_timeout: float = 3.0,
         **kwargs
     ):
         """
@@ -67,11 +73,18 @@ class SuikaEnvWrapper(gym.Wrapper):
                       학습 시 권장, 시각화 필요 시 False로 설정
             **kwargs: 환경 생성에 전달할 추가 인자
         """
+        self._server_process = None
+        self._server_started_by_wrapper = False
+        self._server_port = port
+        self._auto_start_server = auto_start_server
+
         # Mock 환경 또는 실제 환경 선택
         if use_mock:
             print("Using mock environment for development/testing.")
             base_env = self._create_mock_env()
         else:
+            if self._auto_start_server:
+                self._start_server_if_needed(port=port, timeout=server_start_timeout)
             try:
                 # suika_rl에서 SuikaBrowserEnv import (HTTP version)
                 from suika_env.suika_http_env import SuikaBrowserEnv
@@ -144,7 +157,12 @@ class SuikaEnvWrapper(gym.Wrapper):
             observation: 초기 관찰
             info: 추가 정보 딕셔너리
         """
-        obs, info = self.env.reset(seed=seed, options=options)
+        try:
+            obs, info = self.env.reset(seed=seed, options=options)
+        except Exception as e:
+            # Attempt a single retry to keep worker alive
+            print(f"Warning: env.reset failed: {e}")
+            obs, info = self.env.reset(seed=seed, options=options)
 
         # 에피소드 통계 초기화
         self.episode_score = 0
@@ -180,7 +198,17 @@ class SuikaEnvWrapper(gym.Wrapper):
             info: 추가 정보
         """
         # 행동 실행
-        obs, reward, terminated, truncated, info = self.env.step(action)
+        try:
+            obs, reward, terminated, truncated, info = self.env.step(action)
+        except Exception as e:
+            # Keep AsyncVectorEnv workers alive on transient failures
+            print(f"Warning: env.step failed: {e}")
+            obs, info = self.env.reset()
+            reward = 0.0
+            terminated = True
+            truncated = False
+            info = info or {}
+            info['error'] = str(e)
 
         # 에피소드 통계 업데이트
         self.episode_steps += 1
@@ -337,6 +365,35 @@ class SuikaEnvWrapper(gym.Wrapper):
 
         return MockSuikaEnv()
 
+    def _is_port_in_use(self, port: int) -> bool:
+        """Check if a given port is already in use."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            return sock.connect_ex(('localhost', port)) == 0
+
+    def _start_server_if_needed(self, port: int, timeout: float) -> None:
+        """Start the Node.js server if it's not already running."""
+        if self._is_port_in_use(port):
+            return
+
+        server_dir = Path(__file__).resolve().parent.parent / "suika_rl" / "server"
+        cmd = ["npm.cmd" if sys.platform == "win32" else "npm", "start"]
+        env = os.environ.copy()
+        env["PORT"] = str(port)
+        self._server_process = subprocess.Popen(
+            cmd,
+            cwd=server_dir,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env
+        )
+        self._server_started_by_wrapper = True
+        # Wait for port to become available (basic readiness check)
+        deadline = time.time() + max(0.0, timeout)
+        while time.time() < deadline:
+            if self._is_port_in_use(port):
+                break
+            time.sleep(0.1)
+
     def get_episode_statistics(self) -> Dict[str, float]:
         """
         현재 에피소드 통계 반환
@@ -350,6 +407,13 @@ class SuikaEnvWrapper(gym.Wrapper):
             'best_score': self.best_score,
             'average_reward': self.episode_score / max(1, self.episode_steps)
         }
+
+    def close(self):
+        super().close()
+        if self._server_started_by_wrapper and self._server_process is not None:
+            self._server_process.terminate()
+            self._server_process = None
+            self._server_started_by_wrapper = False
 
 
 def make_suika_env(

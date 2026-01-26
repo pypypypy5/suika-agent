@@ -154,10 +154,24 @@ class SuikaBrowserEnv(gymnasium.Env):
             Tuple of (observation dict, done flag)
         """
         # Parse image (RGBA array from server -> RGB for compatibility)
-        image_array = np.array(obs_data['image'], dtype=np.uint8)
-
-        # Reshape from flat array to (height, width, 4) RGBA
-        image_rgba = image_array.reshape(self.img_height, self.img_width, 4)
+        raw_image = np.array(obs_data['image'])
+        # Some servers may send packed 32-bit RGBA; detect and unpack
+        if raw_image.dtype != np.uint8 or (raw_image.size > 0 and raw_image.max() > 255):
+            if raw_image.size == self.img_height * self.img_width:
+                packed = raw_image.astype(np.uint32)
+                rgba = np.empty((packed.size, 4), dtype=np.uint8)
+                rgba[:, 0] = packed & 0xFF
+                rgba[:, 1] = (packed >> 8) & 0xFF
+                rgba[:, 2] = (packed >> 16) & 0xFF
+                rgba[:, 3] = (packed >> 24) & 0xFF
+                image_rgba = rgba.reshape(self.img_height, self.img_width, 4)
+            else:
+                image_array = np.clip(raw_image, 0, 255).astype(np.uint8)
+                image_rgba = image_array.reshape(self.img_height, self.img_width, 4)
+        else:
+            image_array = raw_image.astype(np.uint8)
+            # Reshape from flat array to (height, width, 4) RGBA
+            image_rgba = image_array.reshape(self.img_height, self.img_width, 4)
 
         # Convert RGBA to RGB (drop alpha channel)
         image_rgb = image_rgba[:, :, :3]

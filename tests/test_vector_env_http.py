@@ -13,6 +13,9 @@ from gymnasium.vector import SyncVectorEnv, AsyncVectorEnv
 from envs import SuikaEnvWrapper
 
 
+base_port = 8924
+
+
 def test_single_env():
     """단일 환경 테스트 (SyncVectorEnv)"""
     print("=" * 70)
@@ -22,11 +25,12 @@ def test_single_env():
     def make_env():
         return SuikaEnvWrapper(
             headless=True,
-            port=8924,
+            port=base_port,
             observation_type='image',
             normalize_obs=True,
             use_mock=False,
-            fast_mode=True
+            fast_mode=True,
+            auto_start_server=True
         )
 
     vec_env = SyncVectorEnv([make_env])
@@ -63,11 +67,12 @@ def test_multi_env():
         def _init():
             return SuikaEnvWrapper(
                 headless=True,
-                port=8924,  # 모든 워커가 같은 포트 공유
+                port=(base_port + rank),  # 모든 워커가 같은 포트 공유
                 observation_type='image',
                 normalize_obs=True,
                 use_mock=False,
-                fast_mode=True
+                fast_mode=True,
+                auto_start_server=True
             )
         return _init
 
@@ -120,6 +125,8 @@ def test_from_config():
     env_config = config.get('env', {})
     system_config = config.get('system', {})
     num_envs = system_config.get('num_workers', 4)
+    auto_start_per_env = env_config.get('auto_start_server_per_env', True)
+    base = env_config.get('port_base', env_config.get('port', 8924))
 
     def make_env(rank):
         def _init():
@@ -130,7 +137,8 @@ def test_from_config():
                 reward_scale=env_config.get('reward_scale', 1.0),
                 normalize_obs=env_config.get('normalize_obs', True),
                 use_mock=env_config.get('use_mock', False),
-                fast_mode=env_config.get('fast_mode', True)
+                fast_mode=env_config.get('fast_mode', True),
+                auto_start_server=auto_start_per_env
             )
         return _init
 
@@ -158,16 +166,6 @@ def test_from_config():
 
 
 if __name__ == "__main__":
-    import requests
-
-    # Check server
-    try:
-        response = requests.get("http://localhost:8924/health", timeout=5)
-        print(f"Node.js server is running (port 8924)\n")
-    except:
-        print("ERROR: Node.js server is not running!")
-        print("Start server first: cd suika_rl/server && node server.js\n")
-        sys.exit(1)
 
     try:
         test_single_env()
