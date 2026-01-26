@@ -54,7 +54,7 @@ def create_env(config: dict, num_envs: int = None):
         def _init():
             return SuikaEnvWrapper(
                 headless=env_config.get('headless', True),
-                port=env_config.get('port', 8923) + rank,  # 각 환경마다 고유 포트
+                port=env_config.get('port', 8924),  # 모든 워커가 같은 포트 공유 (HTTP mode)
                 delay_before_img_capture=env_config.get('delay_before_img_capture', 0.5),
                 observation_type=env_config.get('observation_type', 'image'),
                 reward_scale=env_config.get('reward_scale', 1.0),
@@ -110,18 +110,28 @@ def create_agent(env, config: dict):
         print("Using Random Agent (baseline)")
     elif agent_type == 'simple':
         # 간단한 Policy Gradient 에이전트
+        system_config = config.get('system', {})
+        device_setting = system_config.get('device', 'auto')
+        device = None if device_setting == 'auto' else device_setting
+
         agent = SimpleAgent(
             observation_space=obs_space,
             action_space=act_space,
-            config=agent_config
+            config=agent_config,
+            device=device
         )
         print("Using Simple Policy Gradient Agent")
     elif agent_type == 'dqn':
         # DQN 에이전트
+        system_config = config.get('system', {})
+        device_setting = system_config.get('device', 'auto')
+        device = None if device_setting == 'auto' else device_setting
+
         agent = DQNAgent(
             observation_space=obs_space,
             action_space=act_space,
-            config=agent_config
+            config=agent_config,
+            device=device
         )
         print("Using DQN Agent")
     else:

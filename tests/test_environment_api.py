@@ -136,41 +136,38 @@ def test_mock_environment():
 
 
 def test_real_environment_if_available():
-    """실제 Suika 환경 테스트 (가능한 경우)"""
-    print_section("실제 Suika 환경 API 테스트")
+    """실제 Suika 환경 테스트 (HTTP mode)"""
+    print_section("실제 Suika 환경 API 테스트 (HTTP mode)")
 
-    # Selenium 사용 가능 여부 확인
+    # Node.js 서버 사용 가능 여부 확인
     try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
+        import requests
 
-        print("\n[준비] Selenium 및 Chrome 드라이버 확인")
+        print("\n[준비] Node.js 게임 서버 확인")
         print("-" * 70)
 
-        options = Options()
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-
-        driver = webdriver.Chrome(options=options)
-        driver.quit()
-        print("✓ Chrome 드라이버 사용 가능")
+        response = requests.get("http://localhost:8924/health", timeout=5)
+        if response.status_code == 200:
+            print("✓ Node.js 게임 서버 사용 가능 (port 8924)")
+        else:
+            raise Exception("서버 응답 비정상")
 
     except Exception as e:
-        print(f"✗ Chrome 드라이버 사용 불가: {e}")
-        print("\n실제 환경 테스트를 건너뜁니다.")
-        print("Mock 환경 테스트만으로도 API 인터페이스를 확인할 수 있습니다.")
+        print(f"✗ Node.js 게임 서버 사용 불가: {e}")
+        print("\n서버를 먼저 시작하세요:")
+        print("  cd suika_rl/server && node server.js")
         return None, 0
 
     # 실제 환경 테스트
     try:
-        print("\n[1] 실제 환경 생성")
+        print("\n[1] 실제 환경 생성 (HTTP mode)")
         print("-" * 70)
         env = SuikaEnvWrapper(
             headless=True,
-            port=8925,  # 충돌 방지를 위한 다른 포트
-            delay_before_img_capture=0.3,  # 빠른 테스트
-            use_mock=False
+            port=8924,  # Node.js 서버 포트
+            delay_before_img_capture=0.3,  # HTTP mode에서는 무시됨
+            use_mock=False,
+            fast_mode=True
         )
         print(f"✓ 실제 환경 생성 완료")
         print(f"  - Observation space: {env.observation_space}")

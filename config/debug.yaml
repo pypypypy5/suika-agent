@@ -4,9 +4,9 @@
 # 환경 설정
 env:
   # Suika Browser 환경 설정
-  headless: true              # 브라우저 headless 모드
-  port: 8923                  # 로컬 HTTP 서버 포트
-  delay_before_img_capture: 0.5  # 이미지 캡처 전 대기 시간 (초)
+  headless: true              # 브라우저 headless 모드 (HTTP mode에서는 무시됨)
+  port: 8924                  # Node.js 게임 서버 포트 (모든 워커가 공유)
+  delay_before_img_capture: 0.5  # 이미지 캡처 전 대기 시간 (HTTP mode에서는 무시됨)
 
   # 래퍼 설정
   observation_type: "image"  # 'image', 'features', 'both'

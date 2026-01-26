@@ -73,16 +73,16 @@ class SuikaEnvWrapper(gym.Wrapper):
             base_env = self._create_mock_env()
         else:
             try:
-                # suika_rl에서 SuikaBrowserEnv import
-                from suika_env.suika_browser_env import SuikaBrowserEnv
+                # suika_rl에서 SuikaBrowserEnv import (HTTP version)
+                from suika_env.suika_http_env import SuikaBrowserEnv
                 base_env = SuikaBrowserEnv(
                     headless=headless,
                     port=port,
                     delay_before_img_capture=delay_before_img_capture,
                     fast_mode=fast_mode
                 )
-                mode_str = "fast mode (no rendering)" if fast_mode else "real-time mode"
-                print(f"Using real Suika environment (headless={headless}, port={port}, {mode_str})")
+                mode_str = "HTTP mode (fast, stable)"
+                print(f"Using real Suika environment (port={port}, {mode_str})")
             except ImportError as e:
                 print(f"Warning: Could not import SuikaBrowserEnv: {e}")
                 print("Falling back to mock environment. Install suika_rl to use real environment.")

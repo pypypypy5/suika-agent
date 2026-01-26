@@ -1,10 +1,11 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.common.exceptions import WebDriverException, TimeoutException
 import time
 import gymnasium
 import ipdb
 import io
-import numpy as np    
+import numpy as np
 from PIL import Image
 import imageio
 import subprocess
@@ -26,6 +27,8 @@ class SuikaBrowserEnv(gymnasium.Env):
         opts = webdriver.ChromeOptions()
         opts.add_argument("--width=1024")
         opts.add_argument("--height=768")
+        opts.add_argument("--disable-dev-shm-usage")  # 공유 메모리 문제 방지
+        opts.add_argument("--no-sandbox")  # 샌드박스 비활성화로 안정성 향상
         self.headless = headless
         if headless:
             opts.add_argument("--headless=new")
@@ -33,7 +36,10 @@ class SuikaBrowserEnv(gymnasium.Env):
         self.fast_mode = fast_mode
         self.img_width = 128
         self.img_height = 128
+        # 타임아웃 증가
         self.driver = webdriver.Chrome(options=opts)
+        self.driver.set_page_load_timeout(300)  # 페이지 로드 타임아웃 5분
+        self.driver.set_script_timeout(300)  # 스크립트 타임아웃 5분
         # NOTE: Image shape is (128, 128, 3) RGB, not RGBA
         # PIL may convert RGBA to RGB during processing
         _obs_dict = {
@@ -65,26 +71,50 @@ class SuikaBrowserEnv(gymnasium.Env):
         time.sleep(1)
     
     def _get_obs_and_status(self):
-        img = self._capture_canvas()
-        status, score = self.driver.execute_script('return [window.Game.stateIndex, window.Game.score];')
-        score = np.array([score], dtype=np.float32)
-        return dict(image=img, score=score), status
+        try:
+            img = self._capture_canvas()
+            status, score = self.driver.execute_script('return [window.Game.stateIndex, window.Game.score];')
+            score = np.array([score], dtype=np.float32)
+            return dict(image=img, score=score), status
+        except (WebDriverException, TimeoutException) as e:
+            print(f"Warning: Failed to get observation: {e}")
+            # Return fallback values
+            img = np.zeros((self.img_height, self.img_width, 3), dtype=np.uint8)
+            score = np.array([0.0], dtype=np.float32)
+            return dict(image=img, score=score), 3  # status=3 means game over
     
-    def _capture_canvas(self):
+    def _capture_canvas(self, max_retries=3):
         # OPTIMIZATION: Screenshots are a major bottleneck. We optimize by:
         # 1. Getting the canvas element once (caching would be even better but element can become stale)
         # 2. Using BILINEAR instead of LANCZOS for faster (though slightly lower quality) resizing
         # 3. Converting directly to array without intermediate steps where possible
-        canvas = self.driver.find_element(By.ID, 'game-canvas')
-        image_string = canvas.screenshot_as_png
-        img = Image.open(io.BytesIO(image_string))
-        # first crop out right hand side and lower bar.
-        img = img.crop((0, 0, 520, img.height))
 
-        # Use faster BILINEAR filter instead of LANCZOS (LANCZOS is higher quality but slower)
-        imgResized = img.resize((self.img_width, self.img_height), Image.Resampling.BILINEAR)
-        arr = np.asarray(imgResized)
-        return arr
+        for attempt in range(max_retries):
+            try:
+                canvas = self.driver.find_element(By.ID, 'game-canvas')
+                image_string = canvas.screenshot_as_png
+                img = Image.open(io.BytesIO(image_string))
+                # first crop out right hand side and lower bar.
+                img = img.crop((0, 0, 520, img.height))
+
+                # Use faster BILINEAR filter instead of LANCZOS (LANCZOS is higher quality but slower)
+                imgResized = img.resize((self.img_width, self.img_height), Image.Resampling.BILINEAR)
+                arr = np.asarray(imgResized)
+                return arr
+            except (WebDriverException, TimeoutException) as e:
+                if attempt < max_retries - 1:
+                    print(f"Warning: Screenshot failed (attempt {attempt + 1}/{max_retries}), retrying...")
+                    time.sleep(0.5)
+                    # Try to reload the page if we're on the last retry
+                    if attempt == max_retries - 2:
+                        try:
+                            self._reload()
+                        except:
+                            pass
+                else:
+                    print(f"Error: Screenshot failed after {max_retries} attempts: {e}")
+                    # Return a black image as fallback
+                    return np.zeros((self.img_height, self.img_width, 3), dtype=np.uint8)
 
     def _wait_until_stable_fast(self, max_steps=300, delta_ms=16.67, threshold=0.01):
         """

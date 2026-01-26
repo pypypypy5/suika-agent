@@ -132,7 +132,7 @@ class Trainer:
                             mean_reward = np.mean(self.episode_rewards[-100:])
                             mean_length = np.mean(self.episode_lengths[-100:])
                             self.logger.print_progress(
-                                step=step,
+                                step=total_steps,
                                 total_steps=self.total_timesteps,
                                 metrics={
                                     'episode': episode_num,

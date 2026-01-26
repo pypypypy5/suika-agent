@@ -175,6 +175,14 @@ class RLAgent(BaseAgent):
         else:
             self.device = torch.device(device)
 
+        # GPU 정보 출력
+        if self.device.type == 'cuda':
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
+            print(f"Device: GPU - {gpu_name} ({gpu_memory:.1f} GB)")
+        else:
+            print(f"Device: CPU")
+
         # 학습 파라미터
         self.gamma = config.get('gamma', 0.99)  # 할인율
         self.learning_rate = config.get('learning_rate', 3e-4)

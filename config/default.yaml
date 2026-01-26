@@ -3,20 +3,21 @@
 # 환경 설정
 env:
   # Suika Browser 환경 설정
-  headless: true              # 브라우저 headless 모드
-  port: 8923                  # 로컬 HTTP 서버 포트
-  delay_before_img_capture: 0.5  # 이미지 캡처 전 대기 시간 (초)
+  headless: true              # 브라우저 headless 모드 (HTTP mode에서는 무시됨)
+  port: 8924                  # Node.js 게임 서버 포트 (모든 워커가 공유)
+  delay_before_img_capture: 0.5  # 이미지 캡처 전 대기 시간 (HTTP mode에서는 무시됨)
 
   # 래퍼 설정
   observation_type: "image"  # 'image', 'features', 'both'
   reward_scale: 1.0
   normalize_obs: true
   use_mock: false           # true면 Mock 환경 사용 (개발/테스트용)
-  max_episode_steps: 1000
+  fast_mode: true           # 고속 모드 (물리 시뮬레이션만, 렌더링 비활성화)
+  max_episode_steps: 200    # 브라우저 안정성을 위해 200으로 제한 (원래 1000)
 
 # 에이전트 설정
 agent:
-  type: "simple"  # 'simple', 'random', 'dqn', 'ppo', 'sac', 'a2c', etc.
+  type: "dqn"  # 'simple', 'random', 'dqn', 'ppo', 'sac', 'a2c', etc.
 
   # SimpleAgent 전용 설정
   num_discrete_actions: 11  # Box action space를 이산화할 때 행동 개수
@@ -27,13 +28,14 @@ agent:
   learning_rate: 0.0003    # 학습률
   batch_size: 64           # 배치 크기
 
-  # 탐험 설정
+  # 탐험 설정 (DQN용)
   epsilon_start: 1.0       # 초기 epsilon (epsilon-greedy)
-  epsilon_end: 0.01        # 최종 epsilon
+  epsilon_min: 0.1         # 최종 epsilon
   epsilon_decay: 0.995     # epsilon 감소율
 
-  # 메모리 버퍼
-  buffer_size: 100000      # 리플레이 버퍼 크기
+  # 메모리 버퍼 (DQN용)
+  buffer_capacity: 100000  # 리플레이 버퍼 크기
+  target_update_freq: 1000 # 타겟 네트워크 업데이트 빈도
 
   # 신경망 아키텍처
   network:
@@ -44,9 +46,8 @@ agent:
 
 # 학습 설정
 training:
-  total_timesteps: 1000000   # 총 학습 스텝
-  train_freq: 4              # 학습 빈도 (스텝)
-  target_update_freq: 1000   # 타겟 네트워크 업데이트 빈도
+  total_timesteps: 100000   # 총 학습 스텝
+  update_frequency: 8        # 학습 빈도 (4→8로 증가하여 학습 빈도 절반으로)
   gradient_steps: 1          # 각 업데이트당 그래디언트 스텝
 
   # 평가
