@@ -11,10 +11,31 @@ import imageio
 import subprocess
 import socket
 import os
+import psutil
+import gc
+import logging
+
+# 로거 설정
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('[%(name)s] %(levelname)s: %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 class SuikaBrowserEnv(gymnasium.Env):
     def __init__(self, headless=True, port=8923, delay_before_img_capture=0.5, fast_mode=True) -> None:
         self.game_url = f"http://localhost:{port}/"
+        self.port = port
+        self.step_count = 0
+        self.episode_count = 0
+
+        # 프로세스 모니터링을 위한 현재 프로세스 정보
+        self.process = psutil.Process()
+        self.initial_memory = self.process.memory_info().rss / 1024 / 1024  # MB
+        logger.info(f"[Port {port}] Initializing SuikaBrowserEnv, initial memory: {self.initial_memory:.2f} MB")
+
         # Check if port is already in use
         self.server = None
         if not self.is_port_in_use(port):
@@ -23,12 +44,17 @@ class SuikaBrowserEnv(gymnasium.Env):
             # Construct the absolute path of the suika-game directory
             suika_game_dir = os.path.join(script_dir, 'suika-game')
             self.server = subprocess.Popen(["python", "-m", "http.server", str(port)], cwd=suika_game_dir, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            logger.info(f"[Port {port}] Started HTTP server (PID: {self.server.pid})")
+        else:
+            logger.info(f"[Port {port}] HTTP server already running")
 
         opts = webdriver.ChromeOptions()
         opts.add_argument("--width=1024")
         opts.add_argument("--height=768")
         opts.add_argument("--disable-dev-shm-usage")  # 공유 메모리 문제 방지
         opts.add_argument("--no-sandbox")  # 샌드박스 비활성화로 안정성 향상
+        opts.add_argument("--disable-gpu")  # GPU 비활성화로 안정성 향상
+        opts.add_argument("--disable-software-rasterizer")  # 소프트웨어 래스터라이저 비활성화
         self.headless = headless
         if headless:
             opts.add_argument("--headless=new")
@@ -40,6 +66,8 @@ class SuikaBrowserEnv(gymnasium.Env):
         self.driver = webdriver.Chrome(options=opts)
         self.driver.set_page_load_timeout(300)  # 페이지 로드 타임아웃 5분
         self.driver.set_script_timeout(300)  # 스크립트 타임아웃 5분
+        logger.info(f"[Port {port}] Chrome driver initialized")
+
         # NOTE: Image shape is (128, 128, 3) RGB, not RGBA
         # PIL may convert RGBA to RGB during processing
         _obs_dict = {
@@ -61,6 +89,14 @@ class SuikaBrowserEnv(gymnasium.Env):
         info = {}
         self.score = 0
         obs, status = self._get_obs_and_status()
+
+        self.episode_count += 1
+
+        # 주기적인 메모리 모니터링 (100 에피소드마다)
+        if self.episode_count % 100 == 0:
+            self._log_memory_status()
+            gc.collect()
+
         return obs, info
 
     def _reload(self):
@@ -88,8 +124,11 @@ class SuikaBrowserEnv(gymnasium.Env):
         # 1. Getting the canvas element once (caching would be even better but element can become stale)
         # 2. Using BILINEAR instead of LANCZOS for faster (though slightly lower quality) resizing
         # 3. Converting directly to array without intermediate steps where possible
+        # 4. MEMORY FIX: Explicitly close PIL Image objects to prevent memory leaks
 
         for attempt in range(max_retries):
+            img = None
+            imgResized = None
             try:
                 canvas = self.driver.find_element(By.ID, 'game-canvas')
                 image_string = canvas.screenshot_as_png
@@ -99,11 +138,24 @@ class SuikaBrowserEnv(gymnasium.Env):
 
                 # Use faster BILINEAR filter instead of LANCZOS (LANCZOS is higher quality but slower)
                 imgResized = img.resize((self.img_width, self.img_height), Image.Resampling.BILINEAR)
-                arr = np.asarray(imgResized)
+                arr = np.asarray(imgResized).copy()  # copy to ensure data is owned by numpy array
+
+                # CRITICAL: Close PIL images to free memory
+                if imgResized is not None:
+                    imgResized.close()
+                if img is not None:
+                    img.close()
+
                 return arr
             except (WebDriverException, TimeoutException) as e:
+                # Clean up PIL images on error
+                if imgResized is not None:
+                    imgResized.close()
+                if img is not None:
+                    img.close()
+
                 if attempt < max_retries - 1:
-                    print(f"Warning: Screenshot failed (attempt {attempt + 1}/{max_retries}), retrying...")
+                    logger.warning(f"[Port {self.port}] Screenshot failed (attempt {attempt + 1}/{max_retries}), retrying...")
                     time.sleep(0.5)
                     # Try to reload the page if we're on the last retry
                     if attempt == max_retries - 2:
@@ -112,7 +164,7 @@ class SuikaBrowserEnv(gymnasium.Env):
                         except:
                             pass
                 else:
-                    print(f"Error: Screenshot failed after {max_retries} attempts: {e}")
+                    logger.error(f"[Port {self.port}] Screenshot failed after {max_retries} attempts: {e}")
                     # Return a black image as fallback
                     return np.zeros((self.img_height, self.img_width, 3), dtype=np.uint8)
 
@@ -222,6 +274,14 @@ class SuikaBrowserEnv(gymnasium.Env):
         reward += score - self.score
         self.score = score
 
+        self.step_count += 1
+
+        # 주기적인 메모리 모니터링 (1000 스텝마다)
+        if self.step_count % 1000 == 0:
+            self._log_memory_status()
+            # 주기적인 가비지 컬렉션
+            gc.collect()
+
         return obs, reward, terminal, truncated, info
 
 
@@ -230,13 +290,48 @@ class SuikaBrowserEnv(gymnasium.Env):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             return s.connect_ex(('localhost', port)) == 0
 
+    def _log_memory_status(self):
+        """메모리 사용량 로깅"""
+        try:
+            current_memory = self.process.memory_info().rss / 1024 / 1024  # MB
+            memory_increase = current_memory - self.initial_memory
+            logger.info(f"[Port {self.port}] Step {self.step_count}, Episode {self.episode_count}: "
+                       f"Memory: {current_memory:.2f} MB (+{memory_increase:.2f} MB from initial)")
+        except Exception as e:
+            logger.warning(f"[Port {self.port}] Failed to log memory status: {e}")
+
     def close(self):
-        super().close()
+        logger.info(f"[Port {self.port}] Closing environment after {self.step_count} steps, {self.episode_count} episodes")
+
+        # Chrome driver 종료
         if self.driver is not None:
-            self.driver.quit()
-        # Stop the server
+            try:
+                self.driver.quit()
+                logger.info(f"[Port {self.port}] Chrome driver closed")
+            except Exception as e:
+                logger.error(f"[Port {self.port}] Error closing Chrome driver: {e}")
+
+        # HTTP 서버 종료
         if self.server is not None:
-            self.server.terminate()
+            try:
+                self.server.terminate()
+                self.server.wait(timeout=5)  # 최대 5초 대기
+                logger.info(f"[Port {self.port}] HTTP server terminated")
+            except subprocess.TimeoutExpired:
+                logger.warning(f"[Port {self.port}] HTTP server didn't terminate, killing...")
+                self.server.kill()
+                self.server.wait()
+                logger.info(f"[Port {self.port}] HTTP server killed")
+            except Exception as e:
+                logger.error(f"[Port {self.port}] Error closing HTTP server: {e}")
+
+        # 최종 메모리 상태 로깅
+        self._log_memory_status()
+
+        # 가비지 컬렉션
+        gc.collect()
+
+        super().close()
 
 if __name__ == "__main__":
     env = SuikaBrowserEnv(headless=False, delay_before_img_capture=0.5)

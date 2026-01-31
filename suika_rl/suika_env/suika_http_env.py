@@ -7,7 +7,19 @@ import gymnasium
 import numpy as np
 import requests
 import time
+import psutil
+import gc
+import logging
 from typing import Optional, Tuple, Dict, Any
+
+# 로거 설정
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('[%(name)s] %(levelname)s: %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 
 class SuikaBrowserEnv(gymnasium.Env):
@@ -52,6 +64,14 @@ class SuikaBrowserEnv(gymnasium.Env):
         self.api_base = f"{self.server_url}/api"
         self.timeout = timeout
         self.max_retries = max_retries
+        self.port = port
+
+        # 프로세스 모니터링
+        self.step_count = 0
+        self.episode_count = 0
+        self.process = psutil.Process()
+        self.initial_memory = self.process.memory_info().rss / 1024 / 1024  # MB
+        logger.info(f"[Port {port}] Initializing SuikaBrowserEnv (HTTP), initial memory: {self.initial_memory:.2f} MB")
 
         # Generate unique game ID for this environment instance
         self.game_id = f"game_{id(self)}"
@@ -222,6 +242,13 @@ class SuikaBrowserEnv(gymnasium.Env):
         # Reset score tracking
         self.score = obs_data['score']
 
+        self.episode_count += 1
+
+        # 주기적인 메모리 모니터링 (100 에피소드마다)
+        if self.episode_count % 100 == 0:
+            self._log_memory_status()
+            gc.collect()
+
         info = {}
         return observation, info
 
@@ -276,7 +303,25 @@ class SuikaBrowserEnv(gymnasium.Env):
         # Truncated flag (not used in this version)
         truncated = False
 
+        self.step_count += 1
+
+        # 주기적인 메모리 모니터링 (1000 스텝마다)
+        if self.step_count % 1000 == 0:
+            self._log_memory_status()
+            # 주기적인 가비지 컬렉션
+            gc.collect()
+
         return observation, reward, terminated, truncated, info
+
+    def _log_memory_status(self):
+        """메모리 사용량 로깅"""
+        try:
+            current_memory = self.process.memory_info().rss / 1024 / 1024  # MB
+            memory_increase = current_memory - self.initial_memory
+            logger.info(f"[Port {self.port}] Step {self.step_count}, Episode {self.episode_count}: "
+                       f"Memory: {current_memory:.2f} MB (+{memory_increase:.2f} MB from initial)")
+        except Exception as e:
+            logger.warning(f"[Port {self.port}] Failed to log memory status: {e}")
 
     def close(self) -> None:
         """
@@ -284,12 +329,21 @@ class SuikaBrowserEnv(gymnasium.Env):
 
         Optionally delete the game instance on the server to free memory.
         """
+        logger.info(f"[Port {self.port}] Closing environment after {self.step_count} steps, {self.episode_count} episodes")
+
         try:
             # Delete game instance
             url = f"{self.server_url}/api/game/{self.game_id}"
             requests.delete(url, timeout=5.0)
-        except requests.exceptions.RequestException:
-            pass  # Ignore errors during cleanup
+            logger.info(f"[Port {self.port}] Game instance {self.game_id} deleted")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"[Port {self.port}] Failed to delete game instance: {e}")
+
+        # 최종 메모리 상태 로깅
+        self._log_memory_status()
+
+        # 가비지 컬렉션
+        gc.collect()
 
     def render(self, mode: str = 'rgb_array') -> Optional[np.ndarray]:
         """

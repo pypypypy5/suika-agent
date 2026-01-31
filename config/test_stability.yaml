@@ -1,0 +1,61 @@
+# 안정성 테스트용 설정 (짧은 테스트)
+
+# 환경 설정
+env:
+  headless: true
+  port: 8924
+  port_base: 8924
+  auto_start_server_per_env: true
+  force_server_restart: true
+  delay_before_img_capture: 0.5
+  observation_type: "image"
+  reward_scale: 1.0
+  normalize_obs: true
+  use_mock: false
+  fast_mode: true
+  max_episode_steps: 50  # 짧게 설정하여 빠르게 테스트
+
+# 에이전트 설정
+agent:
+  type: "dqn"
+  num_discrete_actions: 11
+  obs_key: "image"
+  gamma: 0.99
+  learning_rate: 0.0003
+  batch_size: 32  # 작게 설정
+  epsilon_start: 1.0
+  epsilon_min: 0.1
+  epsilon_decay: 0.995
+  buffer_capacity: 10000  # 작게 설정
+  target_update_freq: 500
+  network:
+    hidden_dims: [128, 128]  # 작게 설정
+    activation: "relu"
+    use_dueling: false
+    use_noisy: false
+
+# 학습 설정
+training:
+  total_timesteps: 5000  # 5000 step 테스트
+  update_frequency: 4
+  gradient_steps: 1
+  eval_freq: 2000
+  eval_episodes: 3
+  save_freq: 10000
+  save_path: "experiments/checkpoints"
+  early_stopping:
+    enabled: false
+
+# 로깅 설정
+logging:
+  use_tensorboard: false
+  use_wandb: false
+  log_interval: 10  # 자주 출력
+  save_video: false
+  video_freq: 50000
+
+# 시스템 설정
+system:
+  device: "auto"
+  num_workers: 2  # 2개 환경으로 테스트
+  seed: 42
